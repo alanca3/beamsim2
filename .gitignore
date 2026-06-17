@@ -1,0 +1,41 @@
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS cruft
+.DS_Store
+
+# Compiled NumCalc binary (root-level) and Mesh2HRTF source checkout
+/Mesh2HRTF/
+/NumCalc
+
+# Large solve outputs, generated meshes, balloon data
+runs/
+data/
+*.hdf5
+*.h5
+be.out
+fe.out
+*.msh
+
+# Build / packaging artifacts
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code local settings (user-specific)
+.claude/settings.local.json
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/

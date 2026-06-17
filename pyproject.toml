@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "beamsim2"
+version = "0.0.0"
+description = "BEM-based loudspeaker directivity simulator for beamforming array design"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "scipy",
+    "h5py",
+    "gmsh",
+    "matplotlib",
+    "PySide6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/beamsim2"]
+
+[dependency-groups]
+dev = [
+    "black",
+    "ruff",
+    "pytest",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
