@@ -51,7 +51,7 @@ def _sh(l: int, m: int, obs: ObservationPoints) -> np.ndarray:
     """
     assert obs.theta_phi is not None
     theta = obs.theta_phi[:, 0]  # [N] colatitude in [0, π]
-    phi = obs.theta_phi[:, 1]    # [N] azimuth in [0, 2π)
+    phi = obs.theta_phi[:, 1]  # [N] azimuth in [0, 2π)
     return sph_harm_y(l, m, theta, phi)  # [N] complex
 
 
@@ -110,9 +110,9 @@ def test_weights_sum_to_4pi(n: int):
     """
     obs = lebedev(n)
     total = obs.weights.sum()
-    assert abs(total - _FOUR_PI) < 1e-12, (
-        f"n={n}: sum(weights) = {total:.16g}, expected 4π = {_FOUR_PI:.16g}"
-    )
+    assert (
+        abs(total - _FOUR_PI) < 1e-12
+    ), f"n={n}: sum(weights) = {total:.16g}, expected 4π = {_FOUR_PI:.16g}"
 
 
 @pytest.mark.parametrize("n", LEBEDEV_AVAILABLE)
@@ -145,9 +145,9 @@ def test_Y00_integral():
     Y00 = _sh(0, 0, obs)  # [N] — real and constant
     integral = np.dot(obs.weights, Y00.real)
     expected = math.sqrt(_FOUR_PI)
-    assert abs(integral - expected) < 1e-12, (
-        f"∫Y_0^0 dΩ = {integral:.16g}, expected √(4π) = {expected:.16g}"
-    )
+    assert (
+        abs(integral - expected) < 1e-12
+    ), f"∫Y_0^0 dΩ = {integral:.16g}, expected √(4π) = {expected:.16g}"
 
 
 @pytest.mark.parametrize(
@@ -172,12 +172,10 @@ def test_sh_self_inner_product(l: int, m: int):
     The 26-point grid is exact for algebraic degree 7, covering l ≤ 3 (degree 2l = 6 ≤ 7).
     """
     obs = lebedev(26)
-    Y = _sh(l, m, obs)             # [N] complex
+    Y = _sh(l, m, obs)  # [N] complex
     integrand = (Y.conj() * Y).real  # |Y|² — always real and non-negative
     integral = np.dot(obs.weights, integrand)
-    assert abs(integral - 1.0) < 1e-11, (
-        f"Y_{l}^{m}: ∫|Y|² dΩ = {integral:.16g}, expected 1.0"
-    )
+    assert abs(integral - 1.0) < 1e-11, f"Y_{l}^{m}: ∫|Y|² dΩ = {integral:.16g}, expected 1.0"
 
 
 @pytest.mark.parametrize(
@@ -207,9 +205,9 @@ def test_sh_cross_inner_product(l1: int, m1: int, l2: int, m2: int):
     Y2 = _sh(l2, m2, obs)  # [N] complex
     integrand = Y1 * Y2.conj()  # complex; imaginary part should vanish
     integral = np.dot(obs.weights, integrand)
-    assert abs(integral) < 1e-11, (
-        f"Y_{l1}^{m1} × Y_{l2}^{m2}: ∫ cross dΩ = {integral:.4g}, expected 0"
-    )
+    assert (
+        abs(integral) < 1e-11
+    ), f"Y_{l1}^{m1} × Y_{l2}^{m2}: ∫ cross dΩ = {integral:.4g}, expected 0"
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +220,7 @@ def test_theta_phi_roundtrip():
     obs = lebedev(26)
     assert obs.theta_phi is not None
     theta = obs.theta_phi[:, 0]  # [N]
-    phi = obs.theta_phi[:, 1]    # [N]
+    phi = obs.theta_phi[:, 1]  # [N]
     x = np.sin(theta) * np.cos(phi)
     y = np.sin(theta) * np.sin(phi)
     z = np.cos(theta)

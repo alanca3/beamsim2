@@ -16,7 +16,6 @@ from typing import Optional
 
 import numpy as np
 
-
 # ---------------------------------------------------------------------------
 # Geometry
 # ---------------------------------------------------------------------------
@@ -41,8 +40,8 @@ class Mesh:
         geometry.assemble when the driver cap is unioned into the enclosure shell.
     """
 
-    vertices: np.ndarray    # [V, 3] float64 — XYZ in metres
-    triangles: np.ndarray   # [T, 3] int32 — vertex indices, 0-based
+    vertices: np.ndarray  # [V, 3] float64 — XYZ in metres
+    triangles: np.ndarray  # [T, 3] int32 — vertex indices, 0-based
     group_tags: np.ndarray  # [T] int32 — per-element surface-group tag
 
     def __post_init__(self) -> None:
@@ -116,7 +115,7 @@ class FrequencyGrid:
         rather than solved directly. None if no sparse simulation was used.
     """
 
-    frequencies: np.ndarray                     # [F] float64 — Hz
+    frequencies: np.ndarray  # [F] float64 — Hz
     spacing: str = "fractional-octave"
     fractional_octave: Optional[float] = 1 / 12
     interpolated_mask: Optional[np.ndarray] = None  # [F] bool
@@ -168,9 +167,9 @@ class ObservationPoints:
         column 1 is azimuth φ ∈ [0, 2π], both in radians.
     """
 
-    unit_vectors: np.ndarray    # [N, 3] float64
+    unit_vectors: np.ndarray  # [N, 3] float64
     radius: float
-    weights: np.ndarray         # [N] float64 — quadrature weights, sum = 4π
+    weights: np.ndarray  # [N] float64 — quadrature weights, sum = 4π
     scheme: str = "lebedev"
     order: int = 0
     weight_convention: str = "sum_4pi"
@@ -178,19 +177,13 @@ class ObservationPoints:
 
     def __post_init__(self) -> None:
         if self.unit_vectors.ndim != 2 or self.unit_vectors.shape[1] != 3:
-            raise ValueError(
-                f"unit_vectors must be [N, 3], got {self.unit_vectors.shape}"
-            )
+            raise ValueError(f"unit_vectors must be [N, 3], got {self.unit_vectors.shape}")
         n = len(self.unit_vectors)
         if self.weights.ndim != 1 or len(self.weights) != n:
-            raise ValueError(
-                f"weights must be [N], got {self.weights.shape} (expected [{n}])"
-            )
+            raise ValueError(f"weights must be [N], got {self.weights.shape} (expected [{n}])")
         if self.theta_phi is not None:
             if self.theta_phi.shape != (n, 2):
-                raise ValueError(
-                    f"theta_phi must be [N, 2], got {self.theta_phi.shape}"
-                )
+                raise ValueError(f"theta_phi must be [N, 2], got {self.theta_phi.shape}")
 
 
 # ---------------------------------------------------------------------------
@@ -230,8 +223,8 @@ class SolverConfig:
     tolerance: float = 1e-6
     max_iterations: int = 1000
     burton_miller: bool = True
-    speed_of_sound: float = 343.2    # m/s — dry air, ~20°C
-    air_density: float = 1.2041      # kg/m³ — standard dry air, 20°C, 101325 Pa
+    speed_of_sound: float = 343.2  # m/s — dry air, ~20°C
+    air_density: float = 1.2041  # kg/m³ — standard dry air, 20°C, 101325 Pa
     air_attenuation_model: str = "none"
 
 
@@ -255,7 +248,7 @@ class ResourcePlan:
         Estimated wall-clock time per frequency step in seconds.
     """
 
-    ram_bytes_per_step: np.ndarray    # [F] float64 — bytes
+    ram_bytes_per_step: np.ndarray  # [F] float64 — bytes
     time_seconds_per_step: np.ndarray  # [F] float64 — seconds
 
 
@@ -282,7 +275,7 @@ class SolveSpec:
     """
 
     work_dir: str
-    nc_inp_paths: list[str]         # one path per frequency step
+    nc_inp_paths: list[str]  # one path per frequency step
     frequency_grid: FrequencyGrid
 
 
@@ -342,16 +335,14 @@ class ComplexField:
         Frequency values in Hz (mirrors FrequencyGrid.frequencies).
     """
 
-    pressure: np.ndarray           # [F, N] complex128 — Pa at r_obs, unit cone velocity
+    pressure: np.ndarray  # [F, N] complex128 — Pa at r_obs, unit cone velocity
     convergence_flags: np.ndarray  # [F] bool
-    frequencies: np.ndarray        # [F] float64 — Hz
+    frequencies: np.ndarray  # [F] float64 — Hz
 
     def __post_init__(self) -> None:
         f = len(self.frequencies)
         if self.pressure.ndim != 2 or self.pressure.shape[0] != f:
-            raise ValueError(
-                f"pressure must be [F, N] with F={f}, got {self.pressure.shape}"
-            )
+            raise ValueError(f"pressure must be [F, N] with F={f}, got {self.pressure.shape}")
         if self.convergence_flags.ndim != 1 or len(self.convergence_flags) != f:
             raise ValueError(
                 f"convergence_flags must be [F={f}], got {self.convergence_flags.shape}"

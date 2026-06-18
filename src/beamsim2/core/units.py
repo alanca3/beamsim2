@@ -11,11 +11,11 @@ import math
 from typing import Union
 
 # Physical constants — VERIFIED values from NIST / ISO 2533
-_R_SPECIFIC_DRY = 287.058   # J/(kg·K) — specific gas constant for dry air, R_d = R/M_d
-                             # VERIFIED: NIST CODATA; ISO 2533-1975 standard atmosphere
-_GAMMA_DRY = 1.400          # adiabatic index (ratio of specific heats) for dry air
-                             # HEURISTIC: valid for diatomic gas at room temperature;
-                             # varies slightly with temperature but negligible here
+_R_SPECIFIC_DRY = 287.058  # J/(kg·K) — specific gas constant for dry air, R_d = R/M_d
+# VERIFIED: NIST CODATA; ISO 2533-1975 standard atmosphere
+_GAMMA_DRY = 1.400  # adiabatic index (ratio of specific heats) for dry air
+# HEURISTIC: valid for diatomic gas at room temperature;
+# varies slightly with temperature but negligible here
 
 
 def speed_of_sound(

@@ -39,3 +39,6 @@ select = ["E", "F", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "local_only: requires the local NumCalc binary and large RAM (deselect with -m 'not local_only')",
+]

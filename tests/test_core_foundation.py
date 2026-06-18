@@ -22,7 +22,6 @@ from beamsim2.core.types import (
 )
 from beamsim2.core.units import air_attenuation, air_density, speed_of_sound
 
-
 # ---------------------------------------------------------------------------
 # Mesh
 # ---------------------------------------------------------------------------
@@ -41,7 +40,7 @@ def test_mesh_construction():
 def test_mesh_bad_vertices_shape():
     with pytest.raises(ValueError, match="vertices must be"):
         Mesh(
-            vertices=np.zeros((4,)),      # wrong: must be [V,3]
+            vertices=np.zeros((4,)),  # wrong: must be [V,3]
             triangles=np.zeros((2, 3), dtype=np.int32),
             group_tags=np.zeros(2, dtype=np.int32),
         )
