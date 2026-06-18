@@ -148,6 +148,12 @@ def write_dataset(path: str | Path, ds: RadiationDataset) -> None:
         )
 
         # ── /drivers group ────────────────────────────────────────────────
+        # Persist driver order explicitly: HDF5 group key iteration is
+        # alphabetical, not insertion-order, so stacked_h_full row indices
+        # (= driver indices) would be silently permuted on read without this.
+        driver_order = [d.driver_id for d in ds.drivers]
+        f.attrs["driver_order"] = json.dumps(driver_order)
+
         drv_grp = f.create_group("drivers")
         for d in ds.drivers:
             dg2 = drv_grp.create_group(d.driver_id)
@@ -202,12 +208,19 @@ def read_dataset(path: str | Path) -> RadiationDataset:
         )
 
         # ── /drivers ──────────────────────────────────────────────────────
-        # Sort by driver_id for deterministic ordering (HDF5 iterates keys
-        # in alphabetical order; sort makes read order match a sort of the
-        # original insertion order).
-        drivers: list[DriverData] = []
+        # Restore insertion order from the persisted driver_order attr.
+        # HDF5 group key iteration is alphabetical, not insertion-order;
+        # without this, stacked_h_full row indices would be silently permuted.
         drv_grp = f["drivers"]
-        for driver_id in sorted(drv_grp.keys()):
+        raw_order = root_attrs.pop("driver_order", None)
+        if raw_order is not None and isinstance(raw_order, list):
+            ordered_ids = raw_order
+        else:
+            # fallback for files written before driver_order attr existed
+            ordered_ids = sorted(drv_grp.keys())
+
+        drivers: list[DriverData] = []
+        for driver_id in ordered_ids:
             dg2 = drv_grp[driver_id]
             H_bem = dg2["H_bem"][:].astype(np.complex128)  # [F×N] complex128
             terminal_response = dg2["terminal_response"][:].astype(np.complex128)  # [F] complex128

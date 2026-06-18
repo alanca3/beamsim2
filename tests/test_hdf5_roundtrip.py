@@ -280,6 +280,31 @@ class TestHdf5Roundtrip:
         ), f"stacked_h_full shape {stacked.shape} != ({M}, {F}, {N})"
         assert stacked.dtype == np.complex128
 
+    def test_stacked_h_full_row_order_survives_roundtrip(
+        self, dataset: RadiationDataset, tmp_path: Path
+    ) -> None:
+        """stacked_h_full row order (driver index) is preserved after write/read.
+
+        HDF5 iterates group keys alphabetically; without the persisted
+        driver_order attr, rows of the Phase-2 steering matrix would be
+        silently permuted (e.g. woofer_0 ↔ tweeter_1).
+        """
+        p = tmp_path / "test.h5"
+        write_dataset(p, dataset)
+        ds2 = read_dataset(p)
+
+        orig_stacked = stacked_h_full(dataset)
+        rd_stacked = stacked_h_full(ds2)
+
+        orig_ids = [d.driver_id for d in dataset.drivers]
+        rd_ids = [d.driver_id for d in ds2.drivers]
+        assert orig_ids == rd_ids, (
+            f"Driver order changed after roundtrip: {orig_ids} -> {rd_ids}"
+        )
+        assert np.array_equal(rd_stacked, orig_stacked), (
+            "stacked_h_full rows do not match after roundtrip — driver order bug"
+        )
+
 
 class TestHdf5Shapes:
     """Verify dataset shapes agree with [F], [F×N], [N×3], etc."""

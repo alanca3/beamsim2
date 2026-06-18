@@ -176,6 +176,11 @@ def build_dataset(
 
         if terminal_responses is not None:
             tr = terminal_responses[i].astype(np.complex128)  # [F] complex128
+            if tr.ndim != 1 or len(tr) != ref_F:
+                raise ValueError(
+                    f"build_dataset: terminal_responses[{i}] ('{driver_id}') has "
+                    f"shape {tr.shape}, expected ({ref_F},)"
+                )
         else:
             tr = np.ones(ref_F, dtype=np.complex128)  # [F] complex128 — identity
 

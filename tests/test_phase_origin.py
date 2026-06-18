@@ -293,6 +293,21 @@ class TestTensor:
         with pytest.raises(ValueError, match="at least one"):
             build_dataset(driver_inputs=[], directions=obs)
 
+    def test_terminal_response_wrong_length_raises(self) -> None:
+        """build_dataset raises ValueError if terminal_responses[i] length != F."""
+        rng = np.random.default_rng(40)
+        n_freq, n_dir = 4, 6
+        freqs = np.linspace(100.0, 800.0, n_freq)
+        obs = lebedev(n_points=n_dir, radius=1.0)
+        field = _make_complex_field(_rand_field(rng, n_freq, n_dir, freqs), freqs)
+        wrong_tr = np.ones(n_freq + 1, dtype=np.complex128)  # length F+1 — wrong
+        with pytest.raises(ValueError, match="terminal_responses"):
+            build_dataset(
+                driver_inputs=[("d0", field, {})],
+                directions=obs,
+                terminal_responses=[wrong_tr],
+            )
+
 
 # ── V-5: two-driver superposition vs direct BEM solve (@local_only) ─────────
 
