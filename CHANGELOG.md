@@ -4,6 +4,42 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — build-order item 6: RAM-aware NumCalc scheduler
+
+### Added
+- **`backends/numcalc/scheduler.py`** — `NumCalcScheduler` and `SchedulerConfig`.
+  Launches one `NumCalc -istart S -iend S` process per frequency step; packs
+  concurrent processes against a 42 GB RAM budget (48 GB − 6 GB OS headroom),
+  highest-frequency-first ordering (R-04), resume on restart (R-08), and a
+  single R-07 retry at raised `-niter_max 1000` for non-converged steps.
+  Mock-launcher injection point makes the class fully unit-testable without a binary.
+- **`tests/test_scheduler.py`** — 18 pure-Python tests: `order_steps` (RAM/freq
+  ordering, NaN fallback, ties), `step_completed` (pEvalGrid + "End time:" logic),
+  scheduler launch/skip/RAM-gate/retry — all via mock launcher, no binary required.
+
+### Fixed
+- **`ncinp_writer` BC leak (non-contiguous vibrating groups)** — replaced
+  `_group_element_range` (single over-inclusive lo–hi span) with
+  `_group_element_runs` (returns exact contiguous blocks). BOUNDARY section now
+  emits one `ELEM lo TO hi VELO …` line per run; rigid elements between driver runs
+  are never touched.
+- **`adapter._parse_memory_txt`** — rewritten to the real Memory.txt format:
+  `<step> <freq_Hz> <ram_GB>` (3 space-separated floats; GB → bytes). Old parser
+  expected `"Step N: X MB"` and silently returned all-NaN.
+- **`reader.read_convergence`** — detects per-step `NC{S}-{S}.out` log layout
+  (written by the scheduler) vs. legacy combined `NC1-{F}.out`, reads each format.
+- **`reader.step_completed`** (new) — `be.out/be.{S}/pEvalGrid` exists **and**
+  `NC{S}-{S}.out` contains `"End time:"` (crash/partial runs lack the marker).
+- **`adapter.solve`** — delegates to `NumCalcScheduler` instead of a single
+  blocking `subprocess.run(-istart 1 -iend F)`.
+
+### Tests
+- **`tests/test_ncinp_writer.py`** filled in — 16 pure-Python tests covering
+  `_group_element_runs` (contiguous/non-contiguous/missing), BC leak proof,
+  ELEM velocity encoding, structural section checks, `NotImplementedError` guards.
+
+---
+
 ## [Unreleased] — build-order item 5: geometry/ package
 
 ### Added
