@@ -4,6 +4,35 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0] — 2026-06-17 — Stage-0 gate passed
+
+### Added
+- **`validation/sphere_benchmark.py`** — `make_pulsating_sphere_mesh` (icosphere
+  mesh builder migrated from the roundtrip test; returns `(Mesh, BoundaryConditions)`),
+  `pulsating_sphere_pressure` (exact analytic result: `p = ρc·(jka/(1+jka))·(a/r)·e^{−jk(r−a)}`,
+  VERIFIED Kinsler et al. §7.4), `sphere_benchmark_errors` (mean/max dB error vs. analytic,
+  V-2 pass criterion ≤ 0.5 dB).
+- **`validation/analytic_piston.py`** — `piston_directivity` (`D(θ) = 2J₁(ka·sinθ)/(ka·sinθ)`,
+  limit → 1 on-axis, VERIFIED Kinsler et al. eq. 7.4.14), `make_piston_mesh` (gmsh flat
+  piston + square baffle, group 1 = piston, group 2 = sound-hard ring, +z normals enforced),
+  `piston_benchmark_errors` (normalise BEM by on-axis, compare shape to D(θ), V-1 pass
+  criterion ≤ 1 dB).
+- **`validation/power_di.py`** — `directivity_index` (`DI = 10·log10(max/mean_intensity)`
+  via Lebedev quadrature, VERIFIED Benesty et al. §2.3).
+- **`tests/test_power_di.py`** (V-4, no `@local_only`) — 4 tests: monopole → 0 dB; cos²θ
+  dipole → 10·log10(3) ≈ 4.771 dB (exact on Lebedev-26, which integrates degree-7 poly
+  exactly); DI invariant under amplitude scaling; power integral positive and finite. Note:
+  a naive half-space step-function test was intentionally replaced with the dipole test —
+  the Lebedev-26 grid cannot integrate a step function exactly (~1.7 dB vs. 3.01 dB
+  expected), but does integrate cos²θ to full floating-point precision.
+- **`tests/test_sphere_benchmark.py`** (V-2, `@local_only`) — pulsating sphere a = 0.10 m,
+  subdiv-1, [250, 500, 1000] Hz; asserts mean |magnitude error| ≤ 0.5 dB per frequency.
+- **`tests/test_analytic_piston.py`** (V-1, `@local_only`) — piston a = 0.05 m, baffle
+  W = 0.40 m, three ka ≈ 1/2/3 frequencies; asserts mean |directivity error| ≤ 1 dB.
+- **`tests/test_numcalc_roundtrip.py`** (refactored) — removed duplicated `_pulsating_sphere_mesh`
+  and `_subdivide` helpers; now imports `make_pulsating_sphere_mesh` from
+  `beamsim2.validation.sphere_benchmark`.
+
 ## [Unreleased]
 
 ### Added
