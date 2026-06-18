@@ -1,17 +1,17 @@
 """NumCalc BEMBackend adapter — implements estimate/prepare/solve/extract against
 the NumCalc C++ executable (Mesh2HRTF, primary backend per DR-01).
 
-This is the MINIMAL adapter for build-order item 3. It supports a single driver,
-one vibrating group with a uniform scalar velocity, conventional BEM (method 0),
-and a single NC.inp covering all frequencies in one NumCalc invocation. The full
-RAM-aware, highest-frequency-first, checkpointed scheduler is deferred to item 6.
+Updated in build-order item 6: solve() now uses NumCalcScheduler — one process per
+frequency step (NumCalc -istart S -iend S), RAM-aware concurrency, highest-frequency-
+first ordering, resume (R-08), and R-07 retry for non-converged steps. Supports a
+single driver, one vibrating group with a uniform scalar velocity, conventional BEM
+(method 0).
 
 Binary-path resolution: explicit constructor argument → BEAMSIM2_NUMCALC_BIN env var →
 FileNotFoundError. The path recorded in docs/SETUP_NOTES.md is never hardcoded.
 
 The frequency bridge between prepare() and extract() uses a meta.json sidecar written
-into work_dir by prepare(). This keeps core/types.py untouched and survives a future
-resume path (item 6).
+into work_dir by prepare(). This keeps core/types.py untouched and enables resume.
 
 References
 ----------
@@ -32,7 +32,7 @@ import numpy as np
 from beamsim2.backends.base import BEMBackend
 from beamsim2.backends.numcalc.config import resolve_numcalc_binary
 from beamsim2.backends.numcalc.ncinp_writer import write_mesh_files, write_nc_inp
-from beamsim2.backends.numcalc.reader import read_convergence, read_eval_pressure
+from beamsim2.backends.numcalc.reader import read_eval_pressure
 from beamsim2.core.types import (
     BoundaryConditions,
     ComplexField,
@@ -185,60 +185,60 @@ class NumCalcBackend(BEMBackend):
         spec: SolveSpec,
         scheduler: Optional[object] = None,
     ) -> RawSolveResult:
-        """Run NumCalc on the prepared NC.inp and return raw result locations.
+        """Run NumCalc using the RAM-aware per-step scheduler and return results.
 
-        Invokes ``NumCalc -istart 1 -iend F`` in spec.work_dir (all frequencies in
-        one process). The full RAM-aware per-step scheduler is item 6; the scheduler
-        argument is accepted here for interface conformance but ignored.
+        Runs ``NumCalc -estimate_ram`` first against the prepared NC.inp to obtain
+        per-step RAM estimates, then delegates to ``NumCalcScheduler.run()`` which
+        launches one ``NumCalc -istart S -iend S`` process per frequency step,
+        packs concurrent processes against the RAM budget, skips completed steps
+        for resume (R-08), and retries non-converged steps once (R-07).
 
-        NumCalc writes be.out/be.N/ directories and an NC.out log relative to its
-        working directory. VERIFIED: manage_numcalc.py lines 362–378.
+        The ``scheduler`` argument is accepted for interface conformance (DR-02)
+        but the adapter always creates its own ``NumCalcScheduler`` internally.
 
         Parameters
         ----------
         spec : SolveSpec
             Prepared solve spec from prepare().
         scheduler : object, optional
-            Future scheduler (item 6). Ignored in this minimal implementation.
+            Ignored. The adapter constructs its own NumCalcScheduler.
 
         Returns
         -------
         RawSolveResult
             work_dir, completed_steps, convergence_flags [F] bool.
-
-        Raises
-        ------
-        RuntimeError
-            If the NumCalc process exits with a non-zero return code.
         """
+        from beamsim2.backends.numcalc.scheduler import NumCalcScheduler
+        from beamsim2.core.types import ResourcePlan
+
         n_freq = len(spec.frequency_grid.frequencies)
         work_dir = spec.work_dir
 
-        result = subprocess.run(
-            [self._binary, "-istart", "1", "-iend", str(n_freq)],
-            cwd=work_dir,
-            capture_output=False,  # let NumCalc print to terminal for visibility
-            timeout=3600,
+        # Get RAM estimates so the scheduler can pack against the 42 GB budget.
+        # Run -estimate_ram against the already-prepared NC.inp. NaN-tolerant:
+        # if Memory.txt is absent or partial (e.g. under method 0), the scheduler
+        # falls back to concurrency-only mode without failing.
+        try:
+            subprocess.run(
+                [self._binary, "-estimate_ram"],
+                cwd=work_dir,
+                capture_output=True,
+                timeout=120,
+            )
+            ram_est = _parse_memory_txt(work_dir, n_freq)
+        except Exception:
+            ram_est = np.full(n_freq, np.nan, dtype=np.float64)
+
+        resource_plan = ResourcePlan(
+            ram_bytes_per_step=ram_est,
+            time_seconds_per_step=np.full(n_freq, np.nan, dtype=np.float64),
         )
 
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"NumCalc exited with code {result.returncode}. "
-                f"Check {os.path.join(work_dir, 'NC.out')} for details."
-            )
-
-        convergence_flags = read_convergence(work_dir, n_freq)  # [F] bool
-
-        completed_steps = {
-            i
-            for i in range(n_freq)
-            if os.path.isdir(os.path.join(work_dir, "be.out", f"be.{i + 1}"))
-        }
-
-        return RawSolveResult(
+        sched = NumCalcScheduler(binary=self._binary)
+        return sched.run(
             work_dir=work_dir,
-            completed_steps=completed_steps,
-            convergence_flags=convergence_flags,
+            frequencies=spec.frequency_grid.frequencies,
+            resource_plan=resource_plan,
         )
 
     # ── extract ───────────────────────────────────────────────────────────────
@@ -322,16 +322,20 @@ def _dummy_observation_points() -> ObservationPoints:
 
 
 def _parse_memory_txt(work_dir: str, n_freq: int) -> np.ndarray:
-    """Parse NumCalc Memory.txt into per-frequency RAM estimates in bytes.
+    """Parse NumCalc Memory.txt into per-step RAM estimates in bytes.
 
-    Memory.txt is written by NumCalc -estimate_ram. Its format is not fully
-    documented; this parser reads lines of the form 'Step N: X MB' and maps
-    them to frequency indices. Returns NaN for any step not found.
+    Memory.txt is written by ``NumCalc -estimate_ram``. Format
+    (VERIFIED against Mesh2HRTF read_ram_estimates.py and actual files):
+
+        <step>  <frequency_Hz>  <ram_GB>
+
+    Each line is three space-separated floats; units are gigabytes (GB).
+    Returns NaN for any step not found or unparseable.
 
     Parameters
     ----------
     work_dir : str
-        Directory where Memory.txt is written.
+        Directory where Memory.txt is written by NumCalc.
     n_freq : int
         Number of frequency steps.
 
@@ -340,21 +344,22 @@ def _parse_memory_txt(work_dir: str, n_freq: int) -> np.ndarray:
     np.ndarray, shape [n_freq], float64
         Estimated RAM per step in bytes. NaN where not parseable.
     """
-    import re
-
     ram = np.full(n_freq, np.nan, dtype=np.float64)
     mem_path = os.path.join(work_dir, "Memory.txt")
     if not os.path.isfile(mem_path):
         return ram
 
-    step_re = re.compile(r"[Ss]tep\s+(\d+).*?(\d+\.?\d*)\s*MB", re.IGNORECASE)
     with open(mem_path) as fh:
         for line in fh:
-            m = step_re.search(line)
-            if m:
-                step = int(m.group(1)) - 1  # 1-based → 0-based
-                mb = float(m.group(2))
+            parts = line.strip().split()
+            if len(parts) < 3:
+                continue
+            try:
+                step = int(float(parts[0])) - 1  # 1-based → 0-based
+                ram_gb = float(parts[2])  # GB
                 if 0 <= step < n_freq:
-                    ram[step] = mb * 1024 * 1024  # MB → bytes
+                    ram[step] = ram_gb * (1024**3)  # GB → bytes
+            except ValueError:
+                continue
 
     return ram

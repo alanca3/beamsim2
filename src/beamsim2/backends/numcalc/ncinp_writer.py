@@ -1,25 +1,27 @@
 """NC.inp text-file generator: translates normalized Mesh/BoundaryConditions/FrequencyGrid
 into NumCalc input files.
 
-This is the MINIMAL writer for build-order item 3. It supports:
+This writer (updated in build-order item 6) supports:
   - A single vibrating group with a uniform complex scalar velocity (unit cone velocity).
   - Sound-hard implicit for all non-vibrating elements.
-  - Conventional collocation BEM (method 0). The production adapter (item 6) will switch
-    to ML-FMM (method 4) for large meshes; see DR-01.
-  - A single NC.inp covering all frequencies; per-step batching and the frequency scheduler
-    are item 6.
+  - Non-contiguous vibrating groups: emits one ``ELEM lo TO hi VELO`` line per
+    contiguous run, so the BC is never leaked onto rigid elements between runs.
+    This closes the open follow-up from item 3 (see CLAUDE.md).
+  - Conventional collocation BEM (method 0). ML-FMM (method 4) is deferred —
+    flagged departure: DR-01 intended production to use ML-FMM here, but method 0
+    is sufficient for Stage-1 mid-band solves and the scheduler is NaN-tolerant
+    when Memory.txt is absent/partial under method 0.
+  - A single NC.inp covering all frequencies; the item-6 scheduler launches
+    one ``NumCalc -istart S -iend S`` process per step against this shared file.
 
-The evaluation grid for scattered observation points (e.g. Lebedev) uses a ConvexHull
-triangulation, exactly as Mesh2HRTF does for sphere-surface points. Every point on a
-convex hull is a hull vertex, so no observation points are dropped and the index order
-is preserved.
+The evaluation grid uses a ConvexHull triangulation of the observation-point unit
+vectors, exactly as Mesh2HRTF does for sphere-surface grids.
 
-Unsupported inputs raise NotImplementedError with clear messages; they are not silently
-ignored.
+Unsupported inputs raise NotImplementedError with clear messages; not silently ignored.
 
 References
 ----------
-NC.inp format: Mesh2HRTF commit e45d0436a, mesh2input.py _write_nc_inp(), lines 1167–1377.
+NC.inp format: Mesh2HRTF commit e45d0436a, mesh2input.py _write_nc_inp(), lines 1167-1377.
 VERIFIED: Kreuzer et al., Engineering Analysis with Boundary Elements 161:157-178, 2024.
 """
 
@@ -270,11 +272,20 @@ def write_nc_inp(
     # Format: ELEM <lo> TO <hi> VELO <re> -1 <im> -1
     # -1 for curve IDs = "no frequency-dependent curve" (constant value).
     # VERIFIED: mesh2input.py lines 1316–1340, test NC.inp.
+    # ── BOUNDARY ─────────────────────────────────────────────────────────────
+    # Format: ELEM <lo> TO <hi> VELO <re> -1 <im> -1
+    # -1 for curve IDs = "no frequency-dependent curve" (constant value).
+    # VERIFIED: mesh2input.py lines 1316-1340, test NC.inp.
+    #
+    # Emit one ELEM line per contiguous run of elements with the vibrating tag.
+    # A single over-inclusive lo..hi range (the old _group_element_range approach)
+    # silently leaks the velocity BC onto rigid elements between disjoint runs.
+    # _group_element_runs() returns exact contiguous blocks, closing that leak.
     lines.append("BOUNDARY")
     tag, velocity = next(iter(bc.vibrating_groups.items()))
     vel = complex(velocity)
-    elem_lo, elem_hi = _group_element_range(mesh, tag)
-    lines.append(f"ELEM {elem_lo} TO {elem_hi} VELO {vel.real:.6e} -1 {vel.imag:.6e} -1")
+    for elem_lo, elem_hi in _group_element_runs(mesh, tag):
+        lines.append(f"ELEM {elem_lo} TO {elem_hi} VELO {vel.real:.6e} -1 {vel.imag:.6e} -1")
     lines.append("RETU")
     lines.append("##")
 
@@ -412,30 +423,51 @@ def _validate_bc(bc: BoundaryConditions, mesh: Mesh) -> None:
         )
 
 
-def _group_element_range(mesh: Mesh, tag: int) -> tuple[int, int]:
-    """Return the (lo, hi) inclusive element-index range for a group tag.
+def _group_element_runs(mesh: Mesh, tag: int) -> list[tuple[int, int]]:
+    """Return contiguous runs of element indices carrying the given group tag.
 
-    NumCalc BOUNDARY lines use 0-based element indices matching the order elements
-    appear in Elements.txt. This helper scans group_tags to find contiguous or all
-    matching elements for a given tag.
+    NumCalc BOUNDARY lines use 0-based element indices matching the order
+    elements appear in Elements.txt. This function identifies the exact
+    contiguous blocks of elements with ``group_tags == tag`` and returns one
+    ``(lo, hi)`` pair per block, so the caller emits one ``ELEM lo TO hi``
+    line per block.
 
-    For the pulsating-sphere test all elements share one tag, so lo=0, hi=T-1.
+    Emitting exact runs (versus the old single lo..hi span) prevents the BC
+    from leaking onto rigid elements that sit between disjoint driver groups.
+    This closes the open follow-up from item 3 noted in CLAUDE.md.
 
     Parameters
     ----------
     mesh : Mesh
         Boundary mesh.
     tag : int
-        The surface-group tag to query.
+        Surface-group tag to query.
 
     Returns
     -------
-    tuple[int, int]
-        (lo, hi) — 0-based inclusive element indices with group_tag == tag.
-        Uses the min and max matching indices so a non-contiguous group still produces
-        a valid (though over-inclusive) ELEM range. Item 6 will handle per-element BCs.
+    list[tuple[int, int]]
+        List of ``(lo, hi)`` pairs, one per contiguous run, in index order.
+        ``lo`` and ``hi`` are 0-based inclusive element indices.
+
+    Raises
+    ------
+    ValueError
+        If no elements carry the given tag.
     """
     indices = np.where(mesh.group_tags == tag)[0]
     if len(indices) == 0:
         raise ValueError(f"No elements with group_tag={tag} in mesh.")
-    return int(indices[0]), int(indices[-1])
+
+    runs: list[tuple[int, int]] = []
+    run_start = int(indices[0])
+    run_end = int(indices[0])
+    for idx in indices[1:]:
+        i = int(idx)
+        if i == run_end + 1:
+            run_end = i
+        else:
+            runs.append((run_start, run_end))
+            run_start = i
+            run_end = i
+    runs.append((run_start, run_end))
+    return runs
