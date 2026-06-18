@@ -1,13 +1,14 @@
 """Parser for NumCalc be.out output files.
 
 Reads per-frequency complex pressure at evaluation-grid nodes and extracts
-per-step convergence flags from the NC.out solver log.
+per-step convergence flags from the NumCalc log files.
 
 File layout (VERIFIED against Mesh2HRTF commit e45d0436a output2hrtf.py
-and NC_PostProcessing.cpp lines 598–772):
+and NC_PostProcessing.cpp lines 598-772):
 
   be.out/be.<N>/pEvalGrid   — complex pressure at eval-grid nodes, step N (1-based)
-  NC.out                    — full solver log; one CGS summary line per step
+  NC{S}-{S}.out             — per-step log written by NumCalc for step S (item 6 path)
+  NC1-{F}.out               — combined log for a single -istart 1 -iend F invocation (legacy)
 
 pEvalGrid format:
   Mesh2HRTF <version>
@@ -15,9 +16,12 @@ pEvalGrid format:
   <node_id>  <real_pressure>  <imag_pressure>
   ...
 
-Convergence strings (NC_CommonFunctions.cpp lines 1162–1184):
+Convergence strings (NC_CommonFunctions.cpp lines 1162-1184):
   Success : "CGS solver: number of iterations = <n>, relative error = <e>"
   Failure : "Warning: Maximum number of iterations is reached!"
+
+Completion marker (NC_Main.cpp):
+  "End time:" — written by NumCalc at the end of a successful run.
 """
 
 from __future__ import annotations
@@ -30,6 +34,44 @@ import numpy as np
 # ── Convergence sentinel strings (verified from NC_CommonFunctions.cpp) ──────
 _CONVERGENCE_OK_RE = re.compile(r"CGS solver: number of iterations")
 _CONVERGENCE_FAIL_STR = "Maximum number of iterations is reached"
+
+# ── Completion marker (NC_Main.cpp) ──────────────────────────────────────────
+_END_TIME_STR = "End time:"
+
+
+def step_completed(work_dir: str, step: int) -> bool:
+    """Return True if step S (1-based) is fully completed on disk.
+
+    Mirrors the Mesh2HRTF manage_numcalc.py _check_project() resume logic:
+    1. be.out/be.{step}/pEvalGrid must exist (output was written).
+    2. If NC{step}-{step}.out exists, it must contain "End time:" (NumCalc
+       finished cleanly — partial/crashed runs lack this marker).
+
+    Parameters
+    ----------
+    work_dir : str
+        NumCalc working directory.
+    step : int
+        1-based step number (matches NumCalc's ``be.{step}/`` naming).
+
+    Returns
+    -------
+    bool
+    """
+    peval = os.path.join(work_dir, "be.out", f"be.{step}", "pEvalGrid")
+    if not os.path.isfile(peval):
+        return False
+
+    log_path = os.path.join(work_dir, f"NC{step}-{step}.out")
+    if not os.path.isfile(log_path):
+        # pEvalGrid exists but no per-step log. Treat as complete: NumCalc
+        # writes the log file before pEvalGrid in normal operation, so if
+        # pEvalGrid exists without a log it is a legacy run that wrote a
+        # combined log elsewhere.
+        return True
+
+    with open(log_path, "r", errors="replace") as fh:
+        return _END_TIME_STR in fh.read()
 
 
 def read_eval_pressure(work_dir: str, n_freq: int, n_obs: int) -> np.ndarray:
@@ -88,20 +130,19 @@ def read_eval_pressure(work_dir: str, n_freq: int, n_obs: int) -> np.ndarray:
 
 
 def read_convergence(work_dir: str, n_freq: int) -> np.ndarray:
-    """Parse the NumCalc solver log and return per-step convergence flags.
+    """Parse NumCalc solver logs and return per-step convergence flags.
 
-    NumCalc names the log file NC{istart}-{iend}.out. For a single invocation
-    covering steps 1..n_freq the file is NC1-{n_freq}.out. This function searches
-    for that file first, then falls back to any NC*.out file in work_dir.
+    Detects whether per-step logs (``NC{S}-{S}.out``, written by the item-6
+    scheduler) or a combined log (``NC1-{F}.out``, from the legacy single-
+    invocation path) are present, and reads whichever format is found.
 
-    Splits the log into per-step sections and checks each for the max-iteration
-    warning. A step is flagged False (not converged) if its section contains
-    the warning string or if its be.out/be.N/ directory is missing.
+    For ``n_freq == 1`` both modes write ``NC1-1.out``; the per-step path is
+    used unconditionally in that case (the file is identical either way).
 
     Parameters
     ----------
     work_dir : str
-        Directory containing the NC log and be.out/.
+        Directory containing the NC log files and be.out/.
     n_freq : int
         Number of frequency steps.
 
@@ -112,36 +153,51 @@ def read_convergence(work_dir: str, n_freq: int) -> np.ndarray:
     """
     flags = np.zeros(n_freq, dtype=bool)  # [F] bool — default: not converged
 
-    log_path = _find_nc_log(work_dir, n_freq)
+    # Detect which log layout is present.
+    # Per-step: NC1-1.out exists AND the combined NC1-{F}.out does NOT.
+    # When n_freq==1 both modes produce NC1-1.out, so always use per-step path.
+    per_step_log_1 = os.path.join(work_dir, "NC1-1.out")
+    combined_log_path = os.path.join(work_dir, f"NC1-{n_freq}.out")
+    use_per_step = n_freq == 1 or (
+        os.path.isfile(per_step_log_1) and not os.path.isfile(combined_log_path)
+    )
 
+    if use_per_step:
+        # Per-step path: read each NC{S}-{S}.out individually.
+        for step_0 in range(n_freq):
+            step = step_0 + 1  # 1-based
+            log_path = os.path.join(work_dir, f"NC{step}-{step}.out")
+            if not os.path.isfile(log_path):
+                continue  # flags[step_0] stays False
+            with open(log_path, "r", errors="replace") as fh:
+                text = fh.read()
+            converged = bool(_CONVERGENCE_OK_RE.search(text))
+            max_iter = _CONVERGENCE_FAIL_STR in text
+            flags[step_0] = converged and not max_iter
+        return flags
+
+    # Legacy combined-log path (single -istart 1 -iend F invocation).
+    log_path = _find_nc_log(work_dir, n_freq)
     if log_path is None:
-        # No log file at all — mark everything failed.
         return flags
 
     with open(log_path, "r", errors="replace") as fh:
         log_text = fh.read()
 
-    # Split into per-step sections by the "Step <N>" header NumCalc prints.
-    # Each section covers one frequency step.
     step_sections = re.split(r"(?=Step\s+\d+)", log_text)
 
     for step in range(n_freq):
-        # Check that the output directory exists as a secondary indicator.
         be_dir = os.path.join(work_dir, "be.out", f"be.{step + 1}")
         if not os.path.isdir(be_dir):
             flags[step] = False
             continue
-
-        # Find the section that mentions "Step <step+1>".
         section = _find_step_section(step_sections, step + 1)
         if section is None:
             flags[step] = False
             continue
-
-        converged_line_found = bool(_CONVERGENCE_OK_RE.search(section))
-        max_iter_hit = _CONVERGENCE_FAIL_STR in section
-
-        flags[step] = converged_line_found and not max_iter_hit
+        converged = bool(_CONVERGENCE_OK_RE.search(section))
+        max_iter = _CONVERGENCE_FAIL_STR in section
+        flags[step] = converged and not max_iter
 
     return flags
 
