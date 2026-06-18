@@ -4,6 +4,39 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — build-order item 8: driver/ electrical/terminal chain
+
+### Added
+- **`driver/thiele_small.py`** — `TSParams` dataclass (Re, Bl, Mms, Cms, Rms, Sd) with
+  `fs`/`Qms`/`Qes`/`Qts` property accessors and `vas(rho, c)` method; `from_datasheet`
+  constructor (accepts fs, Qms, Qes|Qts, Vas_m3, Re, Sd); `mechanical_impedance(ts, omega,
+  box_volume, rho, c)` → `[F]` complex128 with free-air and sealed-box (Cab air-spring)
+  alignments; `cone_velocity(ts, ze, omega, voltage, box_volume)` → `[F]` complex128, textbook
+  exp(+jωt) convention.  VERIFIED: Thiele 1971; Small 1972/1973.
+- **`driver/inductance.py`** — `PlainLe(Le)` (labeled fallback) and `LR2Ladder(Le, Le2, Re2)`
+  (parallel topology: Z_L = jωLe ‖ (Re2 + jωLe2)); `voice_coil_impedance(model, Re, omega)` →
+  blocked Ze(ω); `input_impedance(ze, zm, Bl)` → Z_in = Ze + Bl²/Zm (the measurable terminal
+  curve).  VERIFIED: Wright, JAES 38(10):749–754, 1990.
+- **`driver/terminal.py`** — `TerminalModel(ts, inductance, box_volume, voltage, name)`;
+  `terminal_response(model, frequencies, rho, c)` → `[F]` complex128, **engineering exp(−jωt)**
+  convention (= conj(u_textbook)); `terminal_responses_for(models, frequencies)` list builder
+  wired to `build_dataset(terminal_responses=...)`.  `TerminalModel.to_attrs()` populates §3.5
+  per-driver metadata (terminal_response_model, ts_params, box_volume_m3).
+- **`tests/test_driver_terminal.py`** — 35 pure-Python tests (no `@local_only`): T/S roundtrip,
+  Zm resonance/sealed-box fc, Z_in DC/peak/HF, LR-2 vs plain-Le, **convention lock** (critical:
+  asserts Im(Z_in_eng) < 0 at HF and terminal_response = conj(u_textbook) element-by-element),
+  sealed-box fc/Qtc shift, output hygiene, list builder, wiring through `build_dataset`.
+
+### Key correctness note — time-convention lock
+`H_bem` uses NumCalc's engineering exp(−jωt) convention; the T/S lumped model is textbook
+exp(+jωt).  `terminal_response = conj(u_textbook)` performs the one-step conversion in
+`terminal.py`.  Without it, per-driver H_full phase would be wrong and inter-driver steering
+silently corrupted.  The convention is locked by test assertions on Im sign at HF.
+
+### Deferred (as planned)
+- `driver/velocity_profile.py` — spatial BC profiles; deferred (uniform VELO already in ncinp_writer).
+- `splice/` — analytic HF tail + blend; gated on Stage-1 timing (not yet run).
+
 ## [Unreleased] — build-order item 7: assembly/ + io/hdf5_store + V-5
 
 ### Added
