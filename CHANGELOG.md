@@ -4,6 +4,44 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — build-order item 7: assembly/ + io/hdf5_store + V-5
+
+### Added
+- **`assembly/superpose.py`** — `driver_h_bem` (returns raw BEM pressure, no phase
+  processing — §3.4 cardinal rule) and `superpose_fields` (linear complex sum of
+  per-driver fields; validates shape/dtype).
+- **`assembly/phase_origin.py`** — `superposition_residual` (relative_l2,
+  max_abs_db, max_phase_deg) and `assert_superposition_matches` (rtol=1e-3 guard
+  against accidental per-driver re-zeroing — R-02 mitigation, §3.4 guardrail).
+- **`assembly/tensor.py`** — `DriverData` and `RadiationDataset` dataclasses;
+  `build_dataset` assembles ComplexField results + `terminal_response` (identity
+  `ones[F]` until item 8 implements DR-05) into the `H_bem` / `H_full` triad;
+  `stacked_h_full` produces `[M × F × N]` complex128 Phase-2 steering matrix view.
+- **`io/hdf5_store.py`** — `write_dataset` / `read_dataset` in the exact §3.6 HDF5
+  layout: `/frequencies`, `/directions/`, `/drivers/<id>/H_bem|H_full|terminal_response|convergence_flags`
+  plus all §3.5 attrs; complex128 stored natively (exact lossless roundtrip);
+  dict/list attrs JSON-encoded; `schema_version = "1.0"`; drivers read in sorted key
+  order for determinism.
+- **`tests/test_phase_origin.py`** — 19 pure-Python (CI) tests covering superpose
+  linearity/guards, positive proof that a simulated per-driver phase-zeroing bug is
+  detected by the guardrail (no NumCalc needed), tensor H_full contract and mismatch
+  guards; plus **V-5** (`@local_only`): two-driver box superposition vs direct
+  two-driver BEM solve, `relative_l2 = 1.7e-7` (gate ≤ 1e-3). V-5 also first real
+  exercise of multi-group BC writer `_group_element_runs`.
+- **`tests/test_hdf5_roundtrip.py`** — 13 pure-Python tests: bit-exact roundtrip of
+  every array (complex128, bool), every §3.5 attr including nested `ts_params` dict,
+  `schema_version` present, `stacked_h_full` shape. Stage-3 lossless-export gate.
+
+### Fixed
+- **`ncinp_writer` `nelgrp` field** — `chterms[0]` in `NC_Input.cpp` is
+  `numElementGroups_` (verified in source); was hardcoded `2`, now
+  `max(mesh.group_tags)`. Three-group meshes (driver A / driver B / shell) no longer
+  trigger NumCalc's `ielgrp must be <= nelgrp` error at runtime.
+- **`ncinp_writer` multi-group BC** — `_validate_bc` previously raised
+  `NotImplementedError` for more than one vibrating group (deferred to item 7 per
+  docstring). Now supports N scalar vibrating groups; BOUNDARY section loops over all
+  of them via `_group_element_runs`. `test_ncinp_writer` updated accordingly.
+
 ## [Unreleased] — build-order item 6: RAM-aware NumCalc scheduler
 
 ### Added
