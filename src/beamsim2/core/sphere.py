@@ -41,8 +41,8 @@ class _SphereGrid:
     """
 
     unit_vectors: np.ndarray  # [N, 3] float64
-    weights: np.ndarray       # [N] float64, sum == 4π
-    theta_phi: np.ndarray     # [N, 2] float64, (θ, φ) in radians
+    weights: np.ndarray  # [N] float64, sum == 4π
+    theta_phi: np.ndarray  # [N, 2] float64, (θ, φ) in radians
     scheme: str
     order: int
     weight_convention: str = "sum_4pi"
@@ -75,8 +75,8 @@ def _cartesian_to_theta_phi(xyz: np.ndarray) -> np.ndarray:
     expected (theta, phi) arguments.
     """
     theta = np.arccos(np.clip(xyz[:, 2], -1.0, 1.0))  # [N] colatitude in [0, π]
-    phi = np.arctan2(xyz[:, 1], xyz[:, 0]) % _TWO_PI   # [N] azimuth in [0, 2π)
-    return np.column_stack([theta, phi])                 # [N, 2]
+    phi = np.arctan2(xyz[:, 1], xyz[:, 0]) % _TWO_PI  # [N] azimuth in [0, 2π)
+    return np.column_stack([theta, phi])  # [N, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -167,8 +167,8 @@ def _body_orbit(a: float, w: float) -> tuple[np.ndarray, np.ndarray]:
 def _assemble_grid(scheme: str, order: int, *orbits: tuple) -> _SphereGrid:
     """Stack orbit (points, weights) tuples into a _SphereGrid."""
     pts_list, w_list = zip(*orbits)
-    xyz = np.vstack(pts_list)          # [N, 3]
-    weights = np.concatenate(w_list)   # [N]
+    xyz = np.vstack(pts_list)  # [N, 3]
+    weights = np.concatenate(w_list)  # [N]
     return _SphereGrid(
         unit_vectors=xyz,
         weights=weights,
@@ -193,8 +193,8 @@ def _assemble_grid(scheme: str, order: int, *orbits: tuple) -> _SphereGrid:
 # l = 2, 4, 6 (n=26) to floating-point precision.
 # ---------------------------------------------------------------------------
 
-_A_EDGE = 1.0 / math.sqrt(2.0)   # 1/√2  — edge-midpoint orbit radius
-_A_BODY = 1.0 / math.sqrt(3.0)   # 1/√3  — body-diagonal orbit radius
+_A_EDGE = 1.0 / math.sqrt(2.0)  # 1/√2  — edge-midpoint orbit radius
+_A_BODY = 1.0 / math.sqrt(3.0)  # 1/√3  — body-diagonal orbit radius
 
 
 def _lebedev_006() -> _SphereGrid:
@@ -296,8 +296,7 @@ def lebedev(n_points: int = 26, *, radius: float = 1.0) -> ObservationPoints:
             f"Available now: {LEBEDEV_AVAILABLE}."
         )
     raise ValueError(
-        f"n_points={n_points} is not a valid Lebedev order. "
-        f"Available: {LEBEDEV_AVAILABLE}."
+        f"n_points={n_points} is not a valid Lebedev order. " f"Available: {LEBEDEV_AVAILABLE}."
     )
 
 
@@ -316,9 +315,7 @@ def fliege_maier(degree: int, *, radius: float = 1.0) -> ObservationPoints:
     NotImplementedError
         Always; use ``lebedev()`` instead.
     """
-    raise NotImplementedError(
-        "Fliege–Maier grids are not yet implemented. Use lebedev() instead."
-    )
+    raise NotImplementedError("Fliege–Maier grids are not yet implemented. Use lebedev() instead.")
 
 
 def t_design(degree: int, *, radius: float = 1.0) -> ObservationPoints:
@@ -336,9 +333,7 @@ def t_design(degree: int, *, radius: float = 1.0) -> ObservationPoints:
     NotImplementedError
         Always; use ``lebedev()`` instead.
     """
-    raise NotImplementedError(
-        "Spherical t-designs are not yet implemented. Use lebedev() instead."
-    )
+    raise NotImplementedError("Spherical t-designs are not yet implemented. Use lebedev() instead.")
 
 
 def icosphere(subdivisions: int, *, radius: float = 1.0) -> ObservationPoints:
@@ -356,6 +351,4 @@ def icosphere(subdivisions: int, *, radius: float = 1.0) -> ObservationPoints:
     NotImplementedError
         Always; use ``lebedev()`` instead.
     """
-    raise NotImplementedError(
-        "Icosphere grids are not yet implemented. Use lebedev() instead."
-    )
+    raise NotImplementedError("Icosphere grids are not yet implemented. Use lebedev() instead.")
