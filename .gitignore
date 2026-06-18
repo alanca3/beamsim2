@@ -21,6 +21,9 @@ data/
 *.h5
 be.out
 fe.out
+NC.out
+NC.log
+NC*.out
 *.msh
 
 # Build / packaging artifacts
