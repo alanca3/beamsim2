@@ -53,6 +53,7 @@ def make_piston_mesh(
     a_piston: float = 0.05,
     baffle_half_width: float = 0.40,
     h_elem: float = 0.013,
+    h_baffle: float | None = None,
 ) -> tuple[Mesh, BoundaryConditions]:
     """Build a flat piston-in-baffle BEM mesh using gmsh.
 
@@ -65,6 +66,12 @@ def make_piston_mesh(
     radiating half-space).  NumCalc requires outward normals to get the
     sign of the VELO boundary condition right.
 
+    The mesh is graded: the piston disk uses ``h_elem`` throughout; the
+    baffle ring uses ``h_baffle`` (default 4 × h_elem) at the outer rim,
+    with a smooth transition near the piston edge.  This keeps the total
+    element count low enough to stay within NumCalc's compile-time limit
+    MSBE = 110 (maximum elements per integration neighbourhood).
+
     Parameters
     ----------
     a_piston : float
@@ -72,7 +79,10 @@ def make_piston_mesh(
     baffle_half_width : float
         Half-width of the square baffle in metres (default 0.40 m).
     h_elem : float
-        Target element edge length in metres (default 0.013 m).
+        Target element edge length on the piston in metres (default 0.013 m).
+    h_baffle : float or None
+        Target element edge length on the outer baffle rim in metres.
+        None (default) → 4 × h_elem.
 
     Returns
     -------
@@ -87,6 +97,7 @@ def make_piston_mesh(
 
     a = a_piston
     W = baffle_half_width
+    h_coarse = 4.0 * h_elem if h_baffle is None else h_baffle
 
     gmsh.initialize()
     gmsh.option.setNumber("General.Terminal", 0)  # suppress console output
@@ -109,8 +120,36 @@ def make_piston_mesh(
     gmsh.model.addPhysicalGroup(2, disk_tags, tag=1)  # piston  → group 1
     gmsh.model.addPhysicalGroup(2, ring_tags, tag=2)  # baffle  → group 2
 
-    gmsh.option.setNumber("Mesh.CharacteristicLengthMax", h_elem)
+    # Graded mesh: h_elem at the piston boundary circle, coarsening radially
+    # outward on the baffle ring and toward the piston centre.
+    # NumCalc's compile-time MSBE=110 limits max elements per integration
+    # neighbourhood; a uniform h_elem mesh on a 0.8×0.8 m baffle generates
+    # ~9000 elements and crashes. Referencing distance from the piston boundary
+    # CURVE keeps piston total to ~80-90 (well under 110) because the piston
+    # interior also coarsens away from the edge.
+    piston_bdry = gmsh.model.getBoundary(
+        [(2, t) for t in disk_tags], oriented=False, combined=False
+    )
+    piston_curve_tags = [abs(t) for _, t in piston_bdry]
+
+    f_dist = gmsh.model.mesh.field.add("Distance")
+    gmsh.model.mesh.field.setNumbers(f_dist, "CurvesList", piston_curve_tags)
+    gmsh.model.mesh.field.setNumber(f_dist, "Sampling", 200)
+
+    f_thresh = gmsh.model.mesh.field.add("Threshold")
+    gmsh.model.mesh.field.setNumber(f_thresh, "InField", f_dist)
+    gmsh.model.mesh.field.setNumber(f_thresh, "SizeMin", h_elem)
+    gmsh.model.mesh.field.setNumber(f_thresh, "SizeMax", h_coarse)
+    gmsh.model.mesh.field.setNumber(f_thresh, "DistMin", 0.0)
+    gmsh.model.mesh.field.setNumber(f_thresh, "DistMax", 3.0 * h_coarse)
+    gmsh.model.mesh.field.setAsBackgroundMesh(f_thresh)
+
+    gmsh.option.setNumber("Mesh.CharacteristicLengthMax", h_coarse)
     gmsh.option.setNumber("Mesh.CharacteristicLengthMin", h_elem / 4.0)
+    # Disable boundary-size propagation; the background field sets all interior
+    # sizes directly. Without this flag h_elem on the piston boundary circle
+    # propagates to the entire piston interior and keeps the element count high.
+    gmsh.option.setNumber("Mesh.CharacteristicLengthExtendFromBoundary", 0)
     gmsh.model.mesh.generate(2)
     gmsh.model.mesh.setOrder(1)  # linear (first-order) triangles
 

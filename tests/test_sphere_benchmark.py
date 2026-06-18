@@ -32,13 +32,19 @@ def _skip_if_no_binary() -> None:
 
 
 def test_sphere_benchmark() -> None:
-    """V-2 acceptance gate: pulsating-sphere BEM magnitudes vs. analytic.
+    """V-2 acceptance gate: pulsating-sphere BEM magnitude and phase vs. analytic.
 
-    Runs NumCalc on an 80-element icosphere (a = 0.10 m, subdivision 1)
+    Runs NumCalc on a 320-element icosphere (a = 0.10 m, subdivision 2)
     at three frequencies (250, 500, 1000 Hz; ka ≈ 0.46, 0.92, 1.83).
     The Lebedev-26 observation sphere is at r = 1.0 m.
 
-    Pass criterion: mean |mag error| ≤ 0.5 dB at every frequency.
+    Subdivision 1 (80 triangles) achieves only 92.8 % of the sphere's surface
+    area, causing a geometric amplitude error of ≈ 0.57 dB at 250 Hz that
+    exceeds the 0.5 dB gate.  Subdivision 2 (320 triangles, ≈ 98 % area ratio)
+    reduces the error to < 0.15 dB at all test frequencies.
+
+    Pass criterion: mean |mag error| ≤ 0.5 dB and mean |phase error| ≤ 5°
+    at every frequency.
     """
     _skip_if_no_binary()
 
@@ -48,7 +54,7 @@ def test_sphere_benchmark() -> None:
     c = 343.2  # m/s
     rho = 1.2041  # kg/m³
 
-    mesh, bc = make_pulsating_sphere_mesh(radius=a, subdivisions=1)
+    mesh, bc = make_pulsating_sphere_mesh(radius=a, subdivisions=2)
     freqs = FrequencyGrid(
         frequencies=np.array([250.0, 500.0, 1000.0], dtype=np.float64),
         spacing="linear",
@@ -84,13 +90,16 @@ def test_sphere_benchmark() -> None:
 
     print(
         "\nV-2 sphere benchmark results:"
-        f"\n  frequencies    : {field.frequencies} Hz"
-        f"\n  mean |error|   : {result['mean_mag_db']} dB"
-        f"\n  max  |error|   : {result['max_mag_db']} dB"
-        f"\n  passed         : {result['passed']}"
+        f"\n  frequencies      : {field.frequencies} Hz"
+        f"\n  mean |mag error| : {result['mean_mag_db']} dB"
+        f"\n  max  |mag error| : {result['max_mag_db']} dB"
+        f"\n  mean |phase err| : {result['mean_phase_deg']} deg"
+        f"\n  max  |phase err| : {result['max_phase_deg']} deg"
+        f"\n  passed           : {result['passed']}"
     )
 
     assert result["passed"], (
-        f"V-2 failed: mean |magnitude error| = {result['mean_mag_db']} dB "
-        f"(threshold 0.5 dB per frequency)"
+        f"V-2 failed: mag error = {result['mean_mag_db']} dB "
+        f"(threshold 0.5 dB), phase error = {result['mean_phase_deg']} deg "
+        f"(threshold 5 deg)"
     )

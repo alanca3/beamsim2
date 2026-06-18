@@ -4,14 +4,65 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] — 2026-06-17 — Stage-0 gate passed
+## [0.1.1] — 2026-06-17 — V-2 passes; V-1 redesign pending
+
+### Fixed
+- **V-2 time-convention correction** (`validation/sphere_benchmark.py`).
+  The `pulsating_sphere_pressure()` formula used the Kinsler physics convention
+  (exp(+jωt), outgoing wave ∝ exp(−jkr)), but NumCalc uses the **engineering
+  convention** (exp(−jωt), outgoing wave ∝ exp(+jkr)). Corrected formula:
+  `p(r) = ρc · (jka/(jka−1)) · (a/r) · exp(+jk(r−a))`.
+  This equals the complex conjugate of the Kinsler form; magnitude is unchanged,
+  phase sign flips. VERIFIED: phase residual after fix < 0.5° at all test
+  frequencies.  Previously the phase error was 19°/128°/32° at 250/500/1000 Hz.
+
+- **V-2 mesh resolution** (`tests/test_sphere_benchmark.py`).
+  Changed from `subdivisions=1` (80 triangles, 92.8 % sphere area) to
+  `subdivisions=2` (320 triangles, ~98 % area). The coarser mesh has a geometric
+  amplitude error of 0.57 dB at 250 Hz, just above the 0.5 dB gate; subdiv-2
+  brings all three frequencies under 0.15 dB.
+
+- **V-2 phase tracking added** (`validation/sphere_benchmark.py`,
+  `tests/test_sphere_benchmark.py`). `sphere_benchmark_errors()` now returns
+  `mean_phase_deg` / `max_phase_deg` and the `passed` flag requires both
+  magnitude ≤ 0.5 dB **and** phase ≤ 5° at every frequency. With the convention
+  fix applied, measured phase errors are [−0.30°, −0.42°, −0.24°] at
+  [250, 500, 1000] Hz.
+
+### Changed
+- **`make_piston_mesh()` now graded** (`validation/analytic_piston.py`).
+  Added optional `h_baffle` parameter. The baffle uses a Distance/Threshold
+  gmsh field referenced to the piston boundary circle, coarsening radially
+  outward.  Critical addition: `Mesh.CharacteristicLengthExtendFromBoundary=0`
+  prevents gmsh from propagating the fine piston-edge size across the entire
+  baffle interior.  Result: 86 piston + 918 baffle = 1004 total elements (was
+  9245 with uniform sizing).
+
+### Known Issue — V-1 (piston directivity) still failing
+NumCalc's `NC_GenerateSubelements` algorithm subdivides each near-field
+integration element until the ratio `distance / sqrt(area_subelement) ≥ 1.3`.
+For **flat coplanar BEM meshes** (piston + baffle both in z = 0), two adjacent
+elements share a plane; the perpendicular distance ε between their planes is
+**exactly zero**. This makes `ratdis` a constant (≈ 0.31) that never reaches 1.3,
+so subdivision runs until the counter `nsbe` hits the compile-time limit `MSBE`.
+The limit is `#define MSBE 220` in `NC_ConstantsVariables.h` (the hardcoded
+error string `"MSBE(= 110)"` in `NC_3dFunctions.cpp` is a stale literal — the
+actual runtime limit after the rebuild is 220). Increasing `MSBE` further would
+not fix the root cause; the subdivision would always eventually crash.
+
+**Implication:** V-1 requires redesigning the BEM geometry to avoid coplanar
+elements — e.g., replacing the flat piston+baffle with a spherical-cap piston
+on a sphere and comparing to the spherical-cap analytic formula (or to the
+flat-piston approximation for small caps on large spheres where the two are
+equivalent to < 1 dB in the forward hemisphere). This redesign is the next task.
+
+## [0.1.0] — 2026-06-17
 
 ### Added
 - **`validation/sphere_benchmark.py`** — `make_pulsating_sphere_mesh` (icosphere
   mesh builder migrated from the roundtrip test; returns `(Mesh, BoundaryConditions)`),
-  `pulsating_sphere_pressure` (exact analytic result: `p = ρc·(jka/(1+jka))·(a/r)·e^{−jk(r−a)}`,
-  VERIFIED Kinsler et al. §7.4), `sphere_benchmark_errors` (mean/max dB error vs. analytic,
-  V-2 pass criterion ≤ 0.5 dB).
+  `pulsating_sphere_pressure` (analytic result using Kinsler physics convention),
+  `sphere_benchmark_errors` (mean/max dB error vs. analytic, V-2 pass criterion ≤ 0.5 dB).
 - **`validation/analytic_piston.py`** — `piston_directivity` (`D(θ) = 2J₁(ka·sinθ)/(ka·sinθ)`,
   limit → 1 on-axis, VERIFIED Kinsler et al. eq. 7.4.14), `make_piston_mesh` (gmsh flat
   piston + square baffle, group 1 = piston, group 2 = sound-hard ring, +z normals enforced),

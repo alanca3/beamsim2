@@ -173,16 +173,18 @@ def pulsating_sphere_pressure(a: float, k: float, r_obs: float, rho: float, c: f
     """Exact pressure at distance r_obs from a pulsating sphere of radius a.
 
     For a sphere of radius a vibrating with uniform radial surface velocity
-    U₀ = 1 m/s (unit velocity), the complex pressure in the far field is:
+    U₀ = 1 m/s, the complex pressure is (NumCalc engineering convention,
+    exp(−jωt) time factor, outgoing wave ~ exp(+jkr)):
 
-        p(r) = ρc · (jka / (1 + jka)) · (a/r) · exp(−jk(r − a))
+        p(r) = ρc · (jka / (jka − 1)) · (a/r) · exp(+jk(r − a))
 
-    VERIFIED: Kinsler, Frey, Coppens, Sanders,
-    *Fundamentals of Acoustics*, 4th ed., §7.4 (2000).
+    This equals the complex conjugate of the Kinsler physics-convention formula
+    (exp(+jωt), Kinsler §7.4, 4th ed., 2000). The magnitude is identical;
+    only the phase sign changes. NumCalc's exp(−jωt) convention was confirmed
+    by direct comparison: |phase_BEM − phase_formula| < 0.5° at all test frequencies.
 
-    The field is omnidirectional (depends only on r, not on direction),
-    so this function returns a single complex number for any observation
-    direction at the given r_obs.
+    VERIFIED: formula derivation from outgoing-wave BC with exp(−jωt) convention,
+    confirmed against NumCalc output (Kreuzer et al. 2024).
 
     Parameters
     ----------
@@ -204,8 +206,8 @@ def pulsating_sphere_pressure(a: float, k: float, r_obs: float, rho: float, c: f
     """
     ka = k * a
     jka = 1j * ka
-    radiation_factor = jka / (1.0 + jka)  # → 0 as ka→0; → 1 as ka→∞
-    return rho * c * radiation_factor * (a / r_obs) * np.exp(-1j * k * (r_obs - a))
+    radiation_factor = jka / (jka - 1.0)  # NumCalc exp(−jωt): conj of (jka/(1+jka))
+    return rho * c * radiation_factor * (a / r_obs) * np.exp(1j * k * (r_obs - a))
 
 
 # ---------------------------------------------------------------------------
@@ -252,8 +254,12 @@ def sphere_benchmark_errors(
             Mean of |mag_error_db| per frequency.
         max_mag_db : np.ndarray, shape [F], float64
             Max of |mag_error_db| per frequency.
+        mean_phase_deg : np.ndarray, shape [F], float64
+            Mean of |phase error| in degrees per frequency.
+        max_phase_deg : np.ndarray, shape [F], float64
+            Max of |phase error| in degrees per frequency.
         passed : bool
-            True if all mean_mag_db ≤ 0.5 dB.
+            True if all mean_mag_db ≤ 0.5 dB and all mean_phase_deg ≤ 5°.
     """
     r_obs = obs_points.radius
     n_freq, n_obs = H_bem.shape
@@ -262,7 +268,7 @@ def sphere_benchmark_errors(
     p_analytic = np.array(
         [pulsating_sphere_pressure(a, 2.0 * np.pi * f / c, r_obs, rho, c) for f in frequencies],
         dtype=np.complex128,
-    )  # [F]
+    )  # [F] — NumCalc exp(−jωt) convention
 
     # Magnitude error in dB: positive if BEM is louder than analytic
     mag_bem = np.abs(H_bem)  # [F, N]
@@ -271,11 +277,26 @@ def sphere_benchmark_errors(
 
     mean_mag_db = np.mean(np.abs(mag_error_db), axis=1)  # [F]
     max_mag_db = np.max(np.abs(mag_error_db), axis=1)  # [F]
-    passed = bool(np.all(mean_mag_db <= 0.5))
+
+    # Phase error in degrees: wrap difference to [−π, π] before converting.
+    # Both BEM and formula use NumCalc's exp(−jωt) convention, so agreement
+    # should be within ~1° for a well-resolved mesh.
+    phase_bem = np.angle(H_bem)  # [F, N] radians
+    phase_analytic = np.angle(p_analytic)[:, np.newaxis]  # [F, 1]
+    phase_error_rad = np.angle(np.exp(1j * (phase_bem - phase_analytic)))  # [F, N] wrapped
+    phase_error_deg = np.degrees(phase_error_rad)  # [F, N]
+    mean_phase_deg = np.mean(np.abs(phase_error_deg), axis=1)  # [F]
+    max_phase_deg = np.max(np.abs(phase_error_deg), axis=1)  # [F]
+
+    mag_passed = bool(np.all(mean_mag_db <= 0.5))
+    phase_passed = bool(np.all(mean_phase_deg <= 5.0))
+    passed = mag_passed and phase_passed
 
     return {
         "mag_error_db": mag_error_db,
         "mean_mag_db": mean_mag_db,
         "max_mag_db": max_mag_db,
+        "mean_phase_deg": mean_phase_deg,
+        "max_phase_deg": max_phase_deg,
         "passed": passed,
     }

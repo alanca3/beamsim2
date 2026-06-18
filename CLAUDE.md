@@ -77,10 +77,34 @@ Prefer running single tests while working; run the full suite before closing a s
 - Never commit large solve outputs, meshes, the NumCalc binary, or the Mesh2HRTF checkout
   (see `.gitignore`). Use the `gh` CLI for GitHub operations.
 
+## NumCalc time convention
+NumCalc uses the **engineering convention**: exp(−jωt) time factor, outgoing waves propagate
+as exp(+jkr). This is the complex conjugate of the Kinsler physics convention (exp(+jωt),
+outgoing ~ exp(−jkr)). All analytic formulas checked against NumCalc output must use the
+engineering convention or the comparison will show phase errors of tens of degrees.
+Pulsating-sphere formula in engineering convention (VERIFIED against NumCalc):
+`p(r) = ρc · (jka/(jka−1)) · (a/r) · exp(+jk(r−a))`
+
 ## Gotchas
 - NumCalc can fail to converge at the highest frequencies (critical/irregular frequencies).
   Detect non-converged steps, retry with more iterations, then flag + interpolate — never
   emit silent garbage.
+- **NumCalc cannot integrate flat coplanar BEM meshes.** The near-field subelement
+  subdivision algorithm (`NC_GenerateSubelements` in `NC_3dFunctions.cpp`) terminates when
+  `distance / sqrt(area_subelement) ≥ 1.3`.  For two elements in the same plane (z = 0),
+  the perpendicular distance ε = 0, so this ratio never grows — the subdivision loops until
+  the counter `nsbe` hits `MSBE` and crashes.  **All real-loudspeaker meshes are closed 3-D
+  surfaces (curved), so this is not an issue in production.** It only bites flat-mesh
+  validation tests.  The fix: replace the flat piston + flat baffle V-1 geometry with a
+  spherical-cap piston on a sphere mesh (curved, ε > 0).  Note: the MSBE limit is `#define
+  MSBE 220` in `NC_ConstantsVariables.h`; the error message string in `NC_3dFunctions.cpp`
+  hardcodes "110" (stale literal — does not reflect the actual compiled limit).
 - Imported geometry is often not watertight; the geometry health-check stage must surface
   located, plain-English errors. Driver diaphragms are always app-generated primitives, so
   their elements are auto-tagged for the vibrating boundary condition (no face-guessing).
+
+## V-1 status (open)
+The flat piston + flat baffle geometry crashes NumCalc for the reason above. V-1 needs to be
+redesigned using a **spherical-cap piston on a rigid sphere** mesh and compared to either the
+spherical-cap analytic formula or the flat-piston approximation (valid when cap radius << sphere
+radius). This is the next task before the Stage-0 gate can be declared fully passed.
