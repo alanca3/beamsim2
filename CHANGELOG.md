@@ -4,6 +4,53 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — build-order item 5: geometry/ package
+
+### Added
+- **`geometry/primitives.py`** — `make_sphere_mesh` and `make_box_mesh` via the
+  gmsh OCC kernel. Shared `_extract_tagged_mesh` helper: maps 1-based gmsh node
+  tags to 0-based indices, sorts triangles by group_tag for contiguous blocks,
+  enforces outward normals.  `make_sphere_mesh` is used directly by the V-2
+  physics canary below.
+- **`geometry/assemble.py`** — `DriverSpec` dataclass and `assemble_box_driver`:
+  fragments a driver disk into a box face via OCC `fragment`, assigns each driver
+  its own contiguous element group (1…n; shell = n+1), and asserts contiguity
+  at return time.  This closes the open follow-up from item 3 —
+  `ncinp_writer._group_element_range` can now reliably use `ELEM lo TO hi` ranges
+  without leaking the velocity BC onto adjacent rigid elements.
+- **`geometry/health.py`** — `run_health_checks` aggregator plus individual
+  checks: `check_watertight` (located plain-English open-edge report),
+  `check_normals` (auto-repair inward windings), `check_degenerate`
+  (auto-removal of zero-area faces), `check_min_feature` (feature-size warning
+  against target edge).  `HealthReport` dataclass.
+- **`geometry/mesh.py`** — `target_edge_length(f_max, n_epw, c)` implementing
+  DR-03's `c / (f_max · N_epw)` sizing rule; `mesh_geometry` convenience wrapper
+  (size → assemble → health-check).  Multi-band routing table deferred to item 6+
+  (Stage-3 RAM optimisation; documented TODO).
+- **`geometry/import_io.py`** — documented `NotImplementedError` stub (CAD import
+  deferred by user decision; parametric path covers all Stage-0/1 use cases).
+- **`tests/test_geometry_health.py`** — 28 pure-Python tests (sizing math, health
+  checks, gmsh primitives, assembly contiguity) plus one `@local_only` V-2
+  physics canary.
+
+### Fixed
+- **`ncinp_writer` BC-leak for non-contiguous vibrating groups** — `assemble_box_
+  driver` now guarantees contiguous element-index blocks per group and asserts
+  this invariant before returning, so the min/max range in `ELEM lo TO hi` is
+  always exact.
+
+### Verified (solve-spike, 2026-06-18)
+- A box enclosure with a flush disk driver does **not** trigger the
+  `NC_GenerateSubelements` MSBE overrun.  The crash is specific to globally-flat
+  all-coplanar meshes (the original V-1 piston+baffle geometry); closed 3-D box
+  surfaces are safe.  Spike: 542-element box+driver at 500 Hz, converged in 18
+  CGS iterations.
+- **V-2 physics canary** (`test_gmsh_sphere_v2_gate`, `@local_only`): gmsh OCC
+  sphere → NumCalc → magnitude error ≤ 0.5 dB at 250/500/1000 Hz, proving the
+  gmsh extraction path is solver-equivalent to the trusted synthetic icosphere.
+
+---
+
 ## [0.1.2] — 2026-06-18 — V-1 redesigned (curved geometry); Stage-0 gate passes
 
 ### Fixed
