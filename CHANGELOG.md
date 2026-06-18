@@ -7,6 +7,34 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`backends/base.py`** (`BEMBackend` abstract interface) — four-method contract
+  (estimate / prepare / solve / extract) using only normalized `core/types` on both
+  sides. DR-02 departure approved: `ObservationPoints` added to `prepare()` because
+  NumCalc bakes the evaluation grid into `NC.inp` at that stage; the DR-02 essence
+  ("only normalized types cross the boundary") is preserved.
+- **`backends/numcalc/config.py`** — binary-path resolver (`BEAMSIM2_NUMCALC_BIN`
+  env var; explicit arg; `FileNotFoundError` with guidance). Path never hardcoded.
+- **`backends/numcalc/ncinp_writer.py`** (minimal) — writes `NC.inp`, boundary-mesh
+  `Nodes.txt`/`Elements.txt` (PROPERTY 0), and evaluation-grid `Nodes.txt`/`Elements.txt`
+  (ConvexHull triangulation, PROPERTY 2, single group). Supports one vibrating group
+  with a uniform scalar `VELO` BC; conventional BEM (method 0); single multi-frequency
+  `NC.inp`. Three format facts found in NC_Input.cpp and fixed: (1) `PLANE WAVES`
+  keyword must be omitted when `n_planewaves=0` (the parser skips the block entirely
+  and chokes on the keyword); (2) frequency-curve y-axis is in Hz directly, not scaled
+  by 10 000; (3) log file is `NC1-{F}.out`, not `NC.out`.
+- **`backends/numcalc/reader.py`** — parses `be.out/be.N/pEvalGrid` into
+  `[F, N] complex128` (asserts eval-node count per file to catch silent desync);
+  parses `NC1-{F}.out` for per-step convergence flags.
+- **`backends/numcalc/adapter.py`** (`NumCalcBackend`) — full four-method adapter;
+  `meta.json` sidecar bridges `frequencies`/`n_obs` from `prepare()` to `extract()`
+  without touching `core/types.py`; pressure passed raw (cardinal rule §3.4).
+- **`tests/test_numcalc_roundtrip.py`** (`@local_only`) — smoke test with a
+  pulsating-sphere mesh (a = 0.10 m, icosphere subdiv-1, [250, 500] Hz, Lebedev N=14
+  at 1 m). Asserts `pressure.shape == (2, 14)`, `complex128`, finite, non-zero,
+  all-converged. Mesh geometry (origin-centered, outward normals, raw phase) is
+  preserved for item 4 analytic validation. Skips without binary; `uv run pytest`
+  (without binary) stays green.
+- `pyproject.toml`: registered `local_only` pytest marker.
 - Initial project skeleton: package structure, pyproject.toml, config files.
 - Authoritative design documents in `docs/`.
 - `CLAUDE.md`: project-level coding instructions for Claude Code sessions.
