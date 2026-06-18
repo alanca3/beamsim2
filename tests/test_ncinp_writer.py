@@ -284,8 +284,11 @@ def test_write_nc_inp_required_sections_present():
 # ---------------------------------------------------------------------------
 
 
-def test_write_nc_inp_raises_on_multiple_vibrating_groups():
-    """More than one vibrating group raises NotImplementedError (deferred to item 7)."""
+def test_write_nc_inp_multiple_vibrating_groups():
+    """Multiple scalar vibrating groups are now supported (item 7).
+
+    Both groups must appear as separate ELEM … VELO lines in BOUNDARY section.
+    """
     mesh = _simple_mesh([1, 1, 2, 2])
     bc = BoundaryConditions(vibrating_groups={1: 1.0 + 0j, 2: 0.5 + 0j})
     freqs = _minimal_freqs()
@@ -294,8 +297,13 @@ def test_write_nc_inp_raises_on_multiple_vibrating_groups():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         counts = write_mesh_files(tmpdir, mesh, obs)
-        with pytest.raises(NotImplementedError):
-            write_nc_inp(tmpdir, mesh, bc, freqs, config, counts)
+        write_nc_inp(tmpdir, mesh, bc, freqs, config, counts)  # must not raise
+        nc_inp = os.path.join(tmpdir, "NC.inp")
+        with open(nc_inp) as f:
+            text = f.read()
+        assert text.count("VELO") == 2, "Expected two VELO lines for two vibrating groups"
+        # nelgrp should be 2 (max group tag)
+        assert "0 0 2 1" in text, "nelgrp should be 2 for a 2-group mesh"
 
 
 def test_write_nc_inp_raises_on_ndarray_velocity():

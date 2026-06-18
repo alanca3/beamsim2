@@ -222,12 +222,17 @@ def write_nc_inp(
     lines.append("##")
 
     # ── Main Parameters I ────────────────────────────────────────────────────
-    # "2 <n_elem_total> <n_node_total> 0 0 2 1 <method> 0"
+    # "<nelgrp> <n_elem_total> <n_node_total> 0 0 2 1 <method> <solver>"
+    # NC_Input.cpp line 247: chterms[0] = numElementGroups_ (this is nelgrp).
+    # NumCalc validates every element group ID against nelgrp at load time
+    # (ielgrp must be <= nelgrp).  nelgrp must be at least max(mesh.group_tags).
+    # The eval grid always uses group 1 ≤ max(mesh.group_tags) for any real mesh.
+    # VERIFIED: NC_Input.cpp NC_Error_Exit_2 "ielgrp must be less than or equal to nelgrp".
     # method 0 = conventional BEM. DR-01: production uses ML-FMM (method 4, item 6).
-    # VERIFIED: mesh2input.py line 1276 and NC_Input.cpp.
+    nelgrp = int(mesh.group_tags.max())
     lines += [
         "## 1. Main Parameters I",
-        f"2 {n_total_elems} {n_total_nodes} 0 0 2 1 {_BEM_METHOD_CONVENTIONAL} 0",
+        f"{nelgrp} {n_total_elems} {n_total_nodes} 0 0 2 1 {_BEM_METHOD_CONVENTIONAL} 0",
         "##",
     ]
 
@@ -281,11 +286,14 @@ def write_nc_inp(
     # A single over-inclusive lo..hi range (the old _group_element_range approach)
     # silently leaks the velocity BC onto rigid elements between disjoint runs.
     # _group_element_runs() returns exact contiguous blocks, closing that leak.
+    # Loop over all vibrating groups (item 7: multi-driver support).
+    # Each group's elements are emitted as exact contiguous runs to avoid
+    # leaking the velocity BC onto rigid elements between groups.
     lines.append("BOUNDARY")
-    tag, velocity = next(iter(bc.vibrating_groups.items()))
-    vel = complex(velocity)
-    for elem_lo, elem_hi in _group_element_runs(mesh, tag):
-        lines.append(f"ELEM {elem_lo} TO {elem_hi} VELO {vel.real:.6e} -1 {vel.imag:.6e} -1")
+    for tag, velocity in bc.vibrating_groups.items():
+        vel = complex(velocity)
+        for elem_lo, elem_hi in _group_element_runs(mesh, tag):
+            lines.append(f"ELEM {elem_lo} TO {elem_hi} VELO {vel.real:.6e} -1 {vel.imag:.6e} -1")
     lines.append("RETU")
     lines.append("##")
 
@@ -409,18 +417,20 @@ def _write_eval_elements(path: str, eval_xyz: np.ndarray) -> int:
 
 
 def _validate_bc(bc: BoundaryConditions, mesh: Mesh) -> None:
-    """Raise NotImplementedError for features deferred to item 6."""
-    if len(bc.vibrating_groups) != 1:
-        raise NotImplementedError(
-            f"Minimal NC.inp writer supports exactly one vibrating group; "
-            f"got {len(bc.vibrating_groups)}. Multi-source batching is item 6."
-        )
-    vel = next(iter(bc.vibrating_groups.values()))
-    if isinstance(vel, np.ndarray):
-        raise NotImplementedError(
-            "Per-element velocity profiles (ndarray BC values) are not supported "
-            "in the minimal writer. Full profile support is item 6."
-        )
+    """Raise NotImplementedError for features not yet supported.
+
+    Multiple scalar vibrating groups are now supported (item 7 — needed for the
+    V-5 two-driver superposition test).  Per-element ndarray velocity profiles
+    remain deferred to item 8.
+    """
+    if len(bc.vibrating_groups) == 0:
+        raise ValueError("BoundaryConditions has no vibrating groups.")
+    for vel in bc.vibrating_groups.values():
+        if isinstance(vel, np.ndarray):
+            raise NotImplementedError(
+                "Per-element velocity profiles (ndarray BC values) are not supported "
+                "in the minimal writer. Full profile support is item 8."
+            )
 
 
 def _group_element_runs(mesh: Mesh, tag: int) -> list[tuple[int, int]]:
