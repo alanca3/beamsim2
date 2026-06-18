@@ -4,6 +4,35 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] — 2026-06-18 — V-1 redesigned (curved geometry); Stage-0 gate passes
+
+### Fixed
+- **V-1 redesigned to a spherical-cap-on-rigid-sphere geometry**
+  (`validation/analytic_piston.py`, `tests/test_analytic_piston.py`).
+  The old flat piston-in-baffle geometry crashes NumCalc (coplanar elements,
+  ε = 0 → `NC_GenerateSubelements` overruns the `MSBE` cap). V-1 now uses a 45°
+  polar cap vibrating at unit radial velocity on an otherwise-rigid icosphere
+  (a = 0.10 m, 1280 triangles) and compares BEM directivity to the **exact**
+  spherical-cap closed form `spherical_cap_directivity()` (Legendre /
+  spherical-Hankel series, NumCalc engineering convention; VERIFIED against
+  Morse & Ingard §7.2, the α→180° omni limit, and the small-cap → flat-piston
+  limit). At ka_sphere = 1, 2, 3 (≈546/1093/1639 Hz) mean directivity error is
+  0.60/0.75/0.82 dB, inside the 1 dB gate. The residual is BEM discretization
+  plus icosahedral azimuthal asymmetry (mesh-independent; not analytic error).
+  The flat `make_piston_mesh` / `piston_directivity` are retained for reference.
+- Stale `MSBE = 110` docstring literal corrected to the compiled `MSBE = 220`.
+
+### Known issue (documented, not yet fixed)
+- **`ncinp_writer._group_element_range` mis-applies the velocity BC for a
+  non-contiguous vibrating group.** It emits a single `ELEM lo TO hi` range
+  from the group's min to max element index, so if the vibrating elements are
+  interleaved with rigid ones the BC silently leaks onto the rigid elements in
+  between — wrong physics, not a safe degradation. V-2 never hit this (all
+  elements vibrate); the cap mesh did, and `make_spherical_cap_piston_mesh`
+  works around it by ordering cap elements contiguously before the rigid
+  remainder. **This must be fixed (a fail-loud guard, or per-element BCs)
+  before multi-driver meshes in build-order items 6–7.**
+
 ## [0.1.1] — 2026-06-17 — V-2 passes; V-1 redesign pending
 
 ### Fixed

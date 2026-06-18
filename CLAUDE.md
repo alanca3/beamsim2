@@ -95,16 +95,22 @@ Pulsating-sphere formula in engineering convention (VERIFIED against NumCalc):
   the perpendicular distance ε = 0, so this ratio never grows — the subdivision loops until
   the counter `nsbe` hits `MSBE` and crashes.  **All real-loudspeaker meshes are closed 3-D
   surfaces (curved), so this is not an issue in production.** It only bites flat-mesh
-  validation tests.  The fix: replace the flat piston + flat baffle V-1 geometry with a
-  spherical-cap piston on a sphere mesh (curved, ε > 0).  Note: the MSBE limit is `#define
+  validation tests.  Fixed (2026-06-18): V-1 replaced the flat piston + flat baffle geometry
+  with a spherical-cap piston on a sphere mesh (curved, ε > 0).  Note: the MSBE limit is `#define
   MSBE 220` in `NC_ConstantsVariables.h`; the error message string in `NC_3dFunctions.cpp`
   hardcodes "110" (stale literal — does not reflect the actual compiled limit).
 - Imported geometry is often not watertight; the geometry health-check stage must surface
   located, plain-English errors. Driver diaphragms are always app-generated primitives, so
   their elements are auto-tagged for the vibrating boundary condition (no face-guessing).
 
-## V-1 status (open)
-The flat piston + flat baffle geometry crashes NumCalc for the reason above. V-1 needs to be
-redesigned using a **spherical-cap piston on a rigid sphere** mesh and compared to either the
-spherical-cap analytic formula or the flat-piston approximation (valid when cap radius << sphere
-radius). This is the next task before the Stage-0 gate can be declared fully passed.
+## V-1 status (resolved, 2026-06-18)
+V-1 was redesigned to a **spherical-cap piston on a rigid sphere** (curved, ε > 0) and now passes:
+BEM directivity vs. the exact spherical-cap closed form (`spherical_cap_directivity`), mean error
+0.6–0.8 dB ≤ the 1 dB gate, at ka_sphere = 1/2/3. With V-2 and V-4 also green, the **Stage-0 gate
+is passed**. See `tests/test_analytic_piston.py` and CHANGELOG [0.1.2]. The flat piston geometry
+(`make_piston_mesh`) is retained only as the documented NumCalc-crash reference.
+
+**Open follow-up (before items 6–7):** the minimal NumCalc writer applies the velocity BC as one
+contiguous `ELEM lo TO hi` range (`ncinp_writer._group_element_range`), so a non-contiguous
+vibrating group silently leaks the BC onto rigid elements in between. The cap mesh works around it
+by ordering cap elements first; real multi-driver meshes need a fail-loud guard or per-element BCs.
