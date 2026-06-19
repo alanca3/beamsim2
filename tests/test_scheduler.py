@@ -480,7 +480,7 @@ def test_on_event_flagged_non_converged(tmp_path):
         _launcher=launcher,
         on_event=on_event,
     )
-    result = sched.run(str(tmp_path), freqs)
+    sched.run(str(tmp_path), freqs)
 
     # After retry the step converges; final step_converged event must reflect that.
     assert len(conv_events) >= 1

@@ -1,1 +1,1 @@
-"""V-3 / V-4: mesh-convergence check (N_epw sweep) and power/directivity-index conservation checks."""
+"""V-3 mesh-convergence check (N_epw 6→8→10 sweep). STUB — not yet implemented."""

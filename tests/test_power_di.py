@@ -1,4 +1,4 @@
-"""V-4: radiated-power and directivity-index conservation checks using quadrature-weighted sphere integration over the BEM field."""
+"""V-4: radiated-power and directivity-index checks (quadrature-weighted sphere integration)."""
 
 from __future__ import annotations
 

@@ -1,1 +1,1 @@
-"""Assembly: per-driver superposition, single-phase-origin enforcement, and H[driver × frequency × direction] tensor construction."""
+"""Assembly (Stage F): superposition, phase-origin enforcement, and H-tensor construction."""

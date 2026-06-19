@@ -41,7 +41,7 @@ _FOUR_PI = 4.0 * math.pi
 # ---------------------------------------------------------------------------
 
 
-def _sh(l: int, m: int, obs: ObservationPoints) -> np.ndarray:
+def _sh(l: int, m: int, obs: ObservationPoints) -> np.ndarray:  # noqa: E741 (l = SH degree)
     """Evaluate complex spherical harmonic Y_l^m at all directions in obs.
 
     scipy 1.15+ API: sph_harm_y(n, m, theta, phi)
@@ -164,7 +164,7 @@ def test_Y00_integral():
         (3, 3),
     ],
 )
-def test_sh_self_inner_product(l: int, m: int):
+def test_sh_self_inner_product(l: int, m: int):  # noqa: E741 (l = SH degree)
     """∫ |Y_l^m|² dΩ = 1 (orthonormality diagonal).
 
     Each spherical harmonic is a distinct radiation pattern; this test confirms

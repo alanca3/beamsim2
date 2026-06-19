@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import QThread, Signal, Slot, QObject
+from PySide6.QtCore import QObject, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -38,8 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from beamsim2.core.types import FrequencyGrid, SolverConfig
-from beamsim2.geometry.assemble import DriverSpec
-from beamsim2.pipeline.progress import ProgressModel, ProgressSnapshot
+from beamsim2.pipeline.progress import ProgressModel
 from beamsim2.pipeline.run import (
     BoxGeometry,
     DriverPlacement,

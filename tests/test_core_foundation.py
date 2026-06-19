@@ -5,8 +5,6 @@ correct shapes, that shape validation catches malformed inputs, and that the
 medium-property formulas give physically correct values.
 """
 
-import math
-
 import numpy as np
 import pytest
 

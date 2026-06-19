@@ -1,4 +1,4 @@
-"""V-2: BEM pressure for pulsating and oscillating sphere vs. exact closed-form solutions; magnitude error ≤0.5 dB in converged regime."""
+"""V-2: BEM vs exact pulsating/oscillating sphere; magnitude error ≤0.5 dB in converged regime."""
 
 from __future__ import annotations
 

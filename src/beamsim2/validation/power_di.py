@@ -1,4 +1,4 @@
-"""V-4: radiated-power and directivity-index conservation checks using quadrature-weighted sphere integration."""
+"""V-4: radiated-power and directivity-index checks via quadrature-weighted sphere integration."""
 
 from __future__ import annotations
 

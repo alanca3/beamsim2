@@ -13,13 +13,10 @@ The @local_only end-to-end test (real NumCalc solve) is in test_pipeline_e2e.py.
 
 from __future__ import annotations
 
-import tempfile
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import pytest
 
 from beamsim2.assembly.tensor import stacked_h_full
 from beamsim2.backends.base import BEMBackend
@@ -29,10 +26,10 @@ from beamsim2.core.types import (
     FrequencyGrid,
     Mesh,
     ObservationPoints,
-    ResourcePlan,
     RawSolveResult,
-    SolveSpec,
+    ResourcePlan,
     SolverConfig,
+    SolveSpec,
 )
 from beamsim2.geometry.assemble import DriverSpec
 from beamsim2.pipeline.run import (
@@ -40,7 +37,6 @@ from beamsim2.pipeline.run import (
     DriverPlacement,
     ResourceEstimate,
     SimulationRequest,
-    SimulationResult,
     estimate_resources,
     run_simulation,
 )

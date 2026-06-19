@@ -26,18 +26,16 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
-from beamsim2.core.types import FrequencyGrid, SolverConfig
+from beamsim2.core.types import FrequencyGrid
 from beamsim2.driver.inductance import LR2Ladder, PlainLe
 from beamsim2.driver.terminal import TerminalModel
 from beamsim2.driver.thiele_small import TSParams
 from beamsim2.geometry.assemble import DriverSpec
 from beamsim2.pipeline.run import (
-    BoxGeometry,
     DriverPlacement,
     ResourceEstimate,
     SimulationRequest,
@@ -386,8 +384,9 @@ class RunMonitorWidget(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
 
-        from PySide6.QtWidgets import QProgressBar, QTableWidget, QTableWidgetItem
         from PySide6.QtGui import QColor
+        from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+
         from beamsim2.pipeline.progress import StepState
 
         self._StepState = StepState

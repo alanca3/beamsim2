@@ -1,1 +1,1 @@
-"""GUI: PySide6 desktop application — built last, imports core but core never imports GUI (DR-04)."""
+"""GUI: PySide6 desktop app — built last; imports core, core never imports GUI (DR-04)."""

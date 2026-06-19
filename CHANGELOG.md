@@ -4,6 +4,31 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Phase-1 completion audit (2026-06-19)
+
+Skeptical whole-project review against Gameplan §6/§7/§8/§3/§9. Full findings,
+triage, and close-out assessment in `docs/handoffs/HANDOFF_2026-06-19_phase1_audit.md`.
+
+### Fixed (clearly-safe; no behaviour change)
+- **Code quality**: `ruff` 68 → 0 and `black` clean across `src/` + `tests/` (removed dead
+  locals, reflowed over-long module docstrings, `# noqa: E741` on the SH-degree `l` params).
+- **`backends/bempp/adapter.py`**: corrected the top-docstring exterior BIE sign to
+  `(K − ½I) p_s = V g_N` / `p_ext = K[p_s] − V[g_N]` (the code was already correct; only the
+  docstring stated the interior form).
+- **`validation/__init__.py`**: docstring now states truthfully that V-1/V-2/V-4/V-5 are wired
+  and V-3/V-6 are not yet implemented.
+- **`.gitignore`**: ignore `.serena/` (tool-generated cache).
+
+### Audit verdict (no code change — flagged for decision)
+- Full suite green with the NumCalc binary (V-1/V-2/V-5 pass on real BEM; bempp cross-check
+  agrees). Cardinal single-phase-origin rule preserved everywhere it executes.
+- **Not ready to tag v1.0.0.** Blockers: Stage-4 close-the-loop (beamforming reproduction of a
+  CBT/cardioid from the H tensor) is absent; V-3 mesh-convergence test missing; V-4 synthetic-only
+  (no reciprocity/energy check); the DR-05 `bem_cap_hz` timing basis is unreliable; several §3.5
+  metadata fields are never written by the pipeline; `burton_miller` is ignored by the NumCalc
+  backend. Recommend tagging the audit state **v0.2.1** and reserving v1.0.0 for after
+  close-the-loop. `schema_version` unchanged.
+
 ## [0.2.0] — 2026-06-19 — Stage 1: real single-driver enclosure solve
 
 ### Added

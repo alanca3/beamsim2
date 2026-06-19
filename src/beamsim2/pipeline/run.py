@@ -30,14 +30,12 @@ from __future__ import annotations
 
 import datetime
 import math
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
-from beamsim2.assembly.superpose import driver_h_bem
 from beamsim2.assembly.tensor import RadiationDataset, build_dataset
 from beamsim2.backends.base import BEMBackend
 from beamsim2.core.sphere import lebedev
@@ -49,7 +47,7 @@ from beamsim2.core.types import (
     SolverConfig,
 )
 from beamsim2.driver.terminal import TerminalModel, terminal_responses_for
-from beamsim2.geometry.assemble import DriverSpec, assemble_box_driver
+from beamsim2.geometry.assemble import DriverSpec
 from beamsim2.geometry.health import HealthReport
 from beamsim2.geometry.mesh import mesh_geometry
 
@@ -280,7 +278,6 @@ def run_simulation(
     backend = backend or _default_backend()
     geom = req.geometry
     M = len(req.drivers)
-    F = len(req.frequencies.frequencies)
     f_max = float(req.frequencies.frequencies.max())
 
     # ── Stage A/B/C: geometry + health check + mesh ─────────────────────────
@@ -300,7 +297,6 @@ def run_simulation(
     # bc_all (all vibrating) is only used for estimate, not for per-driver solves.
 
     obs: ObservationPoints = lebedev(n_points=req.sphere_n_points, radius=req.sphere_radius)
-    N = obs.unit_vectors.shape[0]
 
     # ── Stage D/E: per-driver BEM solves ─────────────────────────────────────
     # For each driver m, build a BoundaryConditions with ONLY group m+1 vibrating;

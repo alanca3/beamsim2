@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from beamsim2.geometry.assemble import DriverSpec, assemble_box_driver
+from beamsim2.geometry.assemble import DriverSpec
 from beamsim2.geometry.health import HealthReport
 
 # Inline import keeps startup fast (Matplotlib is slow to import)
@@ -180,8 +180,8 @@ class GeometryTab(QWidget):
     # ------------------------------------------------------------------
 
     def _on_preview(self) -> None:
-        from beamsim2.pipeline.run import BoxGeometry
         from beamsim2.geometry.mesh import mesh_geometry
+        from beamsim2.pipeline.run import BoxGeometry
 
         # Use drivers from state (may be empty → just box geometry)
         drivers = [dp.spec for dp in self._state.drivers] or [

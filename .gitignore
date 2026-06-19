@@ -38,6 +38,9 @@ build/
 # Claude Code local settings (user-specific)
 .claude/settings.local.json
 
+# Serena MCP project cache (tool-generated, not source)
+.serena/
+
 # pytest / coverage
 .pytest_cache/
 .coverage

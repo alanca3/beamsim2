@@ -1,4 +1,4 @@
-"""V-2: pulsating/oscillating sphere benchmark against exact closed-form solutions, mirroring NumCalc's own validation suite."""
+"""V-2: pulsating/oscillating sphere benchmark vs exact closed-form (mirrors NumCalc's suite)."""
 
 from __future__ import annotations
 

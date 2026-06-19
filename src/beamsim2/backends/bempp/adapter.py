@@ -11,12 +11,13 @@ Physics: exterior Neumann boundary value problem for the Helmholtz equation.
   VERIFIED by the V-2 phase gate (≤5° phase error at 250/500/1000 Hz).
 
   Boundary integral equation (exterior Neumann BVP):
-    (½I + K) p_s = V g_N          on Γ
+    (K − ½I) p_s = V g_N          on Γ
   where V = single-layer, K = double-layer, I = DP0 mass matrix (§3.6, Galerkin).
+  The opposite sign (½I + K) silently solves the *interior* problem (CLAUDE.md).
   Solved with dense LU — O(T³), acceptable for small validation meshes (T ≤ 400).
 
   Representation formula (exterior pressure at observation points x ∉ Γ):
-    p_ext(x) = V[g_N](x) − K[p_s](x)
+    p_ext(x) = K[p_s](x) − V[g_N](x)
   INFERRED from Kirchhoff-Helmholtz identity for exterior domain (outward mesh
   normals point into the exterior for a closed scatterer surface).
 

@@ -23,7 +23,7 @@ import pytest
 # Force offscreen rendering before any Qt import
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QThread, QTimer
+from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
 
@@ -48,11 +48,10 @@ def _synthetic_dataset():
     """Build a minimal RadiationDataset without any NumCalc solve."""
     from beamsim2.assembly.tensor import build_dataset
     from beamsim2.core.sphere import lebedev
-    from beamsim2.core.types import ComplexField, FrequencyGrid
+    from beamsim2.core.types import ComplexField
 
     freqs = np.array([250.0, 500.0, 1000.0])
     obs = lebedev(n_points=N, radius=1.0)
-    rng = np.random.default_rng(42)
 
     def _field(seed: int) -> tuple:
         r = np.random.default_rng(seed)
@@ -99,15 +98,10 @@ def _fake_backend():
     """Minimal fake BEMBackend that returns synthetic ComplexField."""
     from beamsim2.backends.base import BEMBackend
     from beamsim2.core.types import (
-        BoundaryConditions,
         ComplexField,
-        FrequencyGrid,
-        Mesh,
-        ObservationPoints,
-        ResourcePlan,
         RawSolveResult,
+        ResourcePlan,
         SolveSpec,
-        SolverConfig,
     )
 
     class _Fake(BEMBackend):
@@ -156,8 +150,9 @@ def test_main_window_constructs(qapp):
 
 def test_main_window_has_four_tabs(qapp):
     """MainWindow must expose exactly 4 tabs."""
-    from beamsim2.gui.app import MainWindow
     from PySide6.QtWidgets import QTabWidget
+
+    from beamsim2.gui.app import MainWindow
 
     win = MainWindow()
     tabs = win.findChild(QTabWidget)
@@ -175,8 +170,8 @@ def test_main_window_has_four_tabs(qapp):
 
 def test_results_tab_loads_dataset(qapp):
     """ResultsTab.load() must populate without exception and the sub-tabs appear."""
-    from beamsim2.gui.results_view import ResultsTab
     from beamsim2.gui.app import AppState
+    from beamsim2.gui.results_view import ResultsTab
 
     state = AppState()
     tab = ResultsTab(state)
@@ -230,8 +225,8 @@ def test_solve_worker_emits_finished(qapp):
     """SolveWorker must emit 'finished' and multiple 'progressChanged' on a fake solve."""
     from beamsim2.core.types import FrequencyGrid
     from beamsim2.geometry.assemble import DriverSpec
-    from beamsim2.pipeline.run import BoxGeometry, DriverPlacement, SimulationRequest
     from beamsim2.gui.app import SolveWorker
+    from beamsim2.pipeline.run import BoxGeometry, DriverPlacement, SimulationRequest
 
     req = SimulationRequest(
         geometry=BoxGeometry(0.12, 0.10, 0.08),
@@ -324,7 +319,6 @@ def test_solve_worker_emits_finished(qapp):
 
     assert len(results_received) == 1, f"Expected 1 'finished' signal; got {len(results_received)}"
     assert len(progress_received) > 0, "Expected at least one progressChanged signal"
-    from beamsim2.pipeline.run import SimulationResult
 
     assert isinstance(results_received[0], SimulationResult)
 
@@ -355,5 +349,5 @@ def test_all_gui_modules_importable():
     import beamsim2.gui.app  # noqa: F401
     import beamsim2.gui.geometry_view  # noqa: F401
     import beamsim2.gui.parameters_panel  # noqa: F401
-    import beamsim2.gui.run_monitor  # noqa: F401
     import beamsim2.gui.results_view  # noqa: F401
+    import beamsim2.gui.run_monitor  # noqa: F401

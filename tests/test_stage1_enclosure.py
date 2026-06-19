@@ -209,9 +209,13 @@ def test_stage1_enclosure() -> None:
 
     sep = "-" * 66
     print(f"\n{'Stage 1 timing — reference bookshelf enclosure':^66}")
-    print(
-        f"{'Box: %d×%d×%d mm   Driver: %d mm piston' % (_W*1000, _H*1000, _D*1000, _DRIVER_RADIUS*1000):^66}"
+    box_line = "Box: %d×%d×%d mm   Driver: %d mm piston" % (
+        _W * 1000,
+        _H * 1000,
+        _D * 1000,
+        _DRIVER_RADIUS * 1000,
     )
+    print(f"{box_line:^66}")
     print(sep)
     print(f"  {'freq_Hz':>8}  {'n_elem':>7}  {'RAM_GB':>7}  {'wall':>7}  {'converged':>10}")
     print(sep)
@@ -249,7 +253,8 @@ def test_stage1_enclosure() -> None:
     print(sep)
     print(f"  5 kHz step:  {n_top:>6d} elements,  wall ≈ {_format_seconds(t_top).strip()}")
     print(
-        f"  20 kHz step: {n_20k:>6d} elements,  wall ≈ {_format_seconds(t_20k_est).strip()}  (N^{alpha} FMM scaling)"
+        f"  20 kHz step: {n_20k:>6d} elements,  "
+        f"wall ≈ {_format_seconds(t_20k_est).strip()}  (N^{alpha} FMM scaling)"
     )
     if not np.isnan(t_20k_est):
         total_20k = t_20k_est * n_steps_20k * 0.35  # rough: lower steps much faster
@@ -260,7 +265,8 @@ def test_stage1_enclosure() -> None:
         if not np.isnan(peak_ram_gb):
             ram_20k_est = peak_ram_gb * (n_20k / n_top) ** 1.5
             print(
-                f"  Peak RAM at 20 kHz: est. ≈ {ram_20k_est:.1f} GB  (measured {peak_ram_gb:.1f} GB at 5 kHz)"
+                f"  Peak RAM at 20 kHz: est. ≈ {ram_20k_est:.1f} GB  "
+                f"(measured {peak_ram_gb:.1f} GB at 5 kHz)"
             )
         feasible = (not np.isnan(t_20k_est)) and (t_20k_est < 7200)  # < 2h per step
         rec = (
@@ -330,7 +336,8 @@ def test_stage1_enclosure() -> None:
     DI_per_freq = directivity_index(H_bem, obs.weights)  # [F] dB
     di_rise = float(DI_per_freq[-1] - DI_per_freq[0])
     print(
-        f"  DI at 100 Hz: {DI_per_freq[0]:.1f} dB,  at 5 kHz: {DI_per_freq[-1]:.1f} dB  (rise: {di_rise:.1f} dB)"
+        f"  DI at 100 Hz: {DI_per_freq[0]:.1f} dB,  "
+        f"at 5 kHz: {DI_per_freq[-1]:.1f} dB  (rise: {di_rise:.1f} dB)"
     )
     assert di_rise > 2.0, (
         f"DI only rose by {di_rise:.1f} dB from 100 Hz to 5 kHz "

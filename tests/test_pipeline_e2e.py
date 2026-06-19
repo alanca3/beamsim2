@@ -26,7 +26,7 @@ from beamsim2.assembly.phase_origin import assert_superposition_matches, superpo
 from beamsim2.assembly.superpose import superpose_fields
 from beamsim2.assembly.tensor import stacked_h_full
 from beamsim2.core.sphere import lebedev
-from beamsim2.core.types import BoundaryConditions, FrequencyGrid, SolverConfig
+from beamsim2.core.types import FrequencyGrid, SolverConfig
 from beamsim2.geometry.assemble import DriverSpec, assemble_box_driver
 from beamsim2.io.hdf5_store import read_dataset
 from beamsim2.pipeline.run import (

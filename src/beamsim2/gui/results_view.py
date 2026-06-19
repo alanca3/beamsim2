@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+import matplotlib
 import numpy as np
-from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -23,20 +23,16 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSizePolicy,
-    QSlider,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import Qt
-
-import matplotlib
 
 matplotlib.use("QtAgg")
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
-from beamsim2.assembly.tensor import RadiationDataset, stacked_h_full
+from beamsim2.assembly.tensor import RadiationDataset
 
 _P_REF = 20e-6  # Pa — reference SPL
 
@@ -237,7 +233,6 @@ class _PolarView(QWidget):
 
         drv = self._ds.drivers[drv_idx]
         H_f = drv.H_full[freq_idx, :]  # [N] complex128
-        uvecs = self._ds.directions.unit_vectors  # [N, 3]
         theta_phi = self._ds.directions.theta_phi  # [N, 2] — theta, phi in rad
 
         # Plane selection: horizontal = equatorial (theta near π/2),
