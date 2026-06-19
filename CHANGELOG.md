@@ -4,6 +4,35 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Stage-4 close-the-loop gate (2026-06-19)
+
+### Added
+- **`src/beamsim2/validation/closed_loop.py`** — Stage-4 beamforming validation module.
+  Provides `monopole_field`, `delay_sum_weights`, `steer_response`, `null_depth_db`,
+  and `field_agreement_db`. Analytic point-monopole formula in the engineering
+  convention (exp(+jkr)), consistent with NumCalc convention established by V-2.
+- **`tests/test_closed_loop.py`** — §8 Stage-4 gate (G3). Two tiers:
+  - **CI-safe synthetic** (5 tests, no NumCalc): analytic two-monopole end-fire array.
+    Null ≤ −31 dB at −z direction at design frequency (f = c/4d ≈ 1716 Hz, d = 0.05 m).
+    Unsteered sum: no null at −z. Bug injection (strip driver B's on-axis phase):
+    null completely disappears at −z (fills to 0.0 dB), confirming the null relied on
+    correctly preserved inter-driver time-of-flight phase (§3.4 cardinal rule).
+  - **Real-BEM** (3 tests, `@pytest.mark.local_only`): V-5 box+2-driver geometry
+    (drivers side-by-side in x, d_x = 0.05 m). Null at −x = −24.4 dB at design freq.
+    BEM vs analytic monopole-pair RMS error ≤ 2.08 dB at 250–1000 Hz (design freq
+    excluded: near-null dB sensitivity amplifies finite-piston vs point-monopole
+    difference). Bug injection raises the −x null by 14.2 dB and raises BEM−analytic
+    error from 5.88 → 8.28 dB at design freq.
+  The real-BEM tier routes through the full data contract: NumCalc → ComplexField →
+  build_dataset → HDF5 round-trip → stacked_h_full. Assembly and HDF5 I/O verified
+  phase-lossless (max diff = 0.00e+00). This is the §8 Stage-4 gate green.
+
+### Notes
+- The cardioid null is at ONE design frequency, not broadband constant-directivity.
+  Broadband CD beamforming (CBT, superdirective) belongs to Phase 2.
+- Not yet tagging v1.0.0 — remaining blockers G1/G2/G4 (V-3 convergence, V-4 rigor,
+  DR-05 timing) remain open per the audit findings.
+
 ## [Unreleased] — Phase-1 completion audit (2026-06-19)
 
 Skeptical whole-project review against Gameplan §6/§7/§8/§3/§9. Full findings,
