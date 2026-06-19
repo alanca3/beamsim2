@@ -26,6 +26,9 @@ dev = [
     "ruff",
     "pytest",
 ]
+bempp = [
+    "bempp-cl>=0.4.2",  # Numba JIT backend; pyopencl/exafmm deliberately omitted (arm64)
+]
 
 [tool.black]
 line-length = 100
@@ -42,4 +45,5 @@ select = ["E", "F", "I"]
 testpaths = ["tests"]
 markers = [
     "local_only: requires the local NumCalc binary and large RAM (deselect with -m 'not local_only')",
+    "bempp: requires the optional bempp-cl install (install with: uv sync --group bempp)",
 ]
