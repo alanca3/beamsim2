@@ -298,12 +298,10 @@ class TestHdf5Roundtrip:
 
         orig_ids = [d.driver_id for d in dataset.drivers]
         rd_ids = [d.driver_id for d in ds2.drivers]
-        assert orig_ids == rd_ids, (
-            f"Driver order changed after roundtrip: {orig_ids} -> {rd_ids}"
-        )
-        assert np.array_equal(rd_stacked, orig_stacked), (
-            "stacked_h_full rows do not match after roundtrip — driver order bug"
-        )
+        assert orig_ids == rd_ids, f"Driver order changed after roundtrip: {orig_ids} -> {rd_ids}"
+        assert np.array_equal(
+            rd_stacked, orig_stacked
+        ), "stacked_h_full rows do not match after roundtrip — driver order bug"
 
 
 class TestHdf5Shapes:

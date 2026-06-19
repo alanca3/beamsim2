@@ -4,6 +4,45 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — build-order item 9: io/ interoperability exports
+
+### Added
+- **`io/frd_export.py`** — `write_frd(out_dir, ds, *, fields, p_ref, driver_ids)`:
+  writes one VituixCAD-compatible `.frd` text file per (driver, field, direction) under
+  `<out_dir>/<driver_id>/<field>/`.  Exports both `H_full` (measurement-equivalent) and
+  `H_bem` (raw BEM at unit cone velocity) by default.  Magnitude = dB SPL re 20 µPa.
+  Phase = `np.angle(H)` in degrees — **not re-zeroed** (§3.4 cardinal rule enforced and
+  tested).  `manifest.csv` maps every file to its Lebedev direction metadata (index,
+  unit-vector x/y/z, θ/φ in degrees).
+- **`io/sofa_export.py`** — `write_sofa(path, ds, *, field, driver_ids)`: writes a SOFA
+  file (AES69-2022, `GeneralTF` convention via sofar 1.2.3) with M=drivers,
+  R=Lebedev-directions, N=frequencies.  Exact complex128 roundtrip verified.
+  `GLOBAL_Comment` explicitly records the global-origin phase rule (§3.4).
+  `SourcePosition` = cartesian driver positions; `ReceiverPosition` = unit_vectors × r_obs.
+  INFERRED: `GeneralTF` chosen over `FreeFieldDirectivityTF` because the latter is for
+  rotating-speaker setups (M=directions, R=1 mic) and cannot naturally hold multiple
+  drivers in one file (empirically verified with sofar v1.2.3).
+- **`io/clf_export.py`** — `write_clf(...)` documented deferred stub (`NotImplementedError`):
+  CLF text-data format requires SH-resampling from the Lebedev grid onto a regular lat/lon
+  grid; the compiled `.cf2` binary has no open-source writer.  Revisit when a CLF
+  balloon consumer is needed.
+- **`io/__init__.py`** — public re-exports: `write_frd`, `write_sofa`, `write_clf`,
+  `write_dataset`, `read_dataset`.
+- **`pyproject.toml`** — `sofar>=1.2.3` added to `dependencies`.
+- **`tests/test_frd_export.py`** — 17 pure-Python tests (no `@local_only`): file count,
+  manifest existence and row count, frequency/magnitude/phase column values, §3.4
+  phase-ramp guardrail (deliberate path-delay ramp survives export exactly), H_full vs
+  H_bem difference guard, subset selection, error paths.
+- **`tests/test_sofa_export.py`** — 12 pure-Python tests: file write/read, exact complex
+  roundtrip for H_full and H_bem, dimension shape [M, R, N], frequency vector,
+  ReceiverPosition vs unit_vectors, SourcePosition vs driver attrs, GLOBAL_Comment phase
+  note, H_full≠H_bem, driver subset, error paths.
+
+### Notes
+- `schema_version` unchanged ("1.0") — on-disk HDF5 contract not affected.
+- Stage-3 gate (`v0.4.0`) requires a full multi-driver NumCalc run within ~1–2 days;
+  not yet reached.  Item 9 lands in `[Unreleased]`.
+
 ## [Unreleased] — build-order item 8: driver/ electrical/terminal chain
 
 ### Added

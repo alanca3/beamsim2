@@ -14,6 +14,7 @@ dependencies = [
     "gmsh",
     "matplotlib",
     "PySide6",
+    "sofar>=1.2.3",
 ]
 
 [tool.hatch.build.targets.wheel]
