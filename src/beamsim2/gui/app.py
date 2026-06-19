@@ -20,6 +20,7 @@ Build-order item 10 (DR-04, §6 Gameplan).
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from beamsim2.backends.numcalc.config import _write_numcalc_config, resolve_numcalc_binary
 from beamsim2.core.types import FrequencyGrid, SolverConfig
 from beamsim2.pipeline.progress import ProgressModel
 from beamsim2.pipeline.run import (
@@ -313,9 +315,59 @@ class MainWindow(QMainWindow):
 # ---------------------------------------------------------------------------
 
 
+def _prompt_numcalc_binary() -> None:
+    """One-time file-picker dialog to locate NumCalc when it is not configured.
+
+    Called from ``main()`` before ``MainWindow`` is constructed.  Writes the
+    chosen path to ``~/.config/beamsim2/settings.toml`` permanently.  If the
+    user cancels, the main window still opens — they can browse geometry and
+    load saved datasets without running a solve.
+    """
+    try:
+        resolve_numcalc_binary()
+        return  # already configured — nothing to do
+    except FileNotFoundError:
+        pass
+
+    QMessageBox.information(
+        None,
+        "NumCalc Binary Not Found",
+        "BeamSimII needs the NumCalc binary to run BEM simulations.\n\n"
+        "Please locate the NumCalc executable in the next dialog.\n"
+        "Your choice will be saved — you won't be asked again.\n\n"
+        "(Cancel to open BeamSimII without simulation capability.)",
+    )
+
+    path, _ = QFileDialog.getOpenFileName(
+        None,
+        "Locate NumCalc Binary",
+        os.path.expanduser("~"),
+        "NumCalc binary (NumCalc);;All files (*)",
+    )
+
+    if not path:
+        return  # user cancelled; main window still shows
+
+    try:
+        resolve_numcalc_binary(path)  # validate the selection exists on disk
+    except FileNotFoundError:
+        QMessageBox.warning(
+            None,
+            "Invalid Selection",
+            f"File not found:\n{path}\n\nPlease relaunch BeamSimII and try again.",
+        )
+        return
+
+    _write_numcalc_config(path)
+    # Belt-and-suspenders: set env var so current session works immediately
+    # without re-reading the config file from disk.
+    os.environ["BEAMSIM2_NUMCALC_BIN"] = path
+
+
 def main() -> None:
     """Launch the BeamSimII desktop application."""
     app = QApplication.instance() or QApplication(sys.argv)
+    _prompt_numcalc_binary()  # one-time binary location prompt
     win = MainWindow()
     win.show()
     sys.exit(app.exec())

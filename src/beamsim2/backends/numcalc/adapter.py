@@ -8,7 +8,8 @@ single driver, one vibrating group with a uniform scalar velocity, conventional 
 (method 0).
 
 Binary-path resolution: explicit constructor argument → BEAMSIM2_NUMCALC_BIN env var →
-FileNotFoundError. The path recorded in docs/SETUP_NOTES.md is never hardcoded.
+~/.config/beamsim2/settings.toml [numcalc] bin → FileNotFoundError.
+The path recorded in docs/SETUP_NOTES.md is never hardcoded.
 
 The frequency bridge between prepare() and extract() uses a meta.json sidecar written
 into work_dir by prepare(). This keeps core/types.py untouched and enables resume.
