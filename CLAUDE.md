@@ -6,6 +6,10 @@ beamforming filters from that simulation. **Current focus: Phase 1** (the radiat
 simulator). The user is an acoustics/measurement expert, **not a programmer** — write
 all code complete and runnable, and explain numerical/DSP ideas with acoustics analogies.
 
+**Build-order status (2026-06-19):** All 11 items complete and merged to `main`.
+Current milestone: **Stage 1** — first real single-driver enclosure solve, RAM/timing
+measurement, `bem_cap_hz` decision (DR-05), earns `v0.2.0`.
+
 ## Authoritative docs — read the relevant one before non-trivial work
 This file does NOT replace the project docs; it points to them. The architecture and the
 "why" live in the docs. This file is only the always-on rules + commands + pointers.
@@ -45,8 +49,10 @@ superposition test (`tests/test_phase_origin.py`, validation V-5) guards this an
 
 ## Commands
 - Sync dependencies:        `uv sync --group dev`
+- Sync incl. bempp backend: `uv sync --group bempp`   (optional; adds numba/llvmlite)
 - Run a pipeline tool:      `uv run python -m beamsim2.pipeline.run --help`
 - Full test suite:          `uv run pytest`
+- CI suite (no hardware):   `uv run pytest -m 'not local_only and not bempp'`
 - One test file:            `uv run pytest tests/test_phase_origin.py`
 - Format + lint:            `uv run black . && uv run ruff check .`
 Prefer running single tests while working; run the full suite before closing a session.
@@ -61,11 +67,11 @@ Prefer running single tests while working; run the full suite before closing a s
 - A self-test for every subsystem; the full suite must pass before a session closes.
 
 ## Workflow
-- Work ONE build-order item (Gameplan §10) at a time. Use plan mode to explore and plan
-  first on anything multi-file or unfamiliar; skip planning for one-line fixes.
-- Each item's matching validation test (§7) is the finish line: implement, run it, iterate
-  until green, then move on.
-- The headless core/pipeline gates each milestone; the GUI is last and never on the critical path.
+- Build-order items 1–11 are complete. Work is now milestone-driven (Stage 1 → Stage 4).
+  Use plan mode before any multi-file or unfamiliar work; skip for one-line fixes.
+- Each Stage's acceptance gate (§8) is the finish line — implement, run the gate test,
+  iterate until green, then update CHANGELOG and tag the milestone semver.
+- The headless core/pipeline gates each milestone; the GUI never on the critical path.
 
 ## Git / versioning
 - `main` always passes its tests. Non-trivial work goes on a short feature branch
@@ -85,6 +91,17 @@ engineering convention or the comparison will show phase errors of tens of degre
 Pulsating-sphere formula in engineering convention (VERIFIED against NumCalc):
 `p(r) = ρc · (jka/(jka−1)) · (a/r) · exp(+jk(r−a))`
 
+## bempp-cl notes (item 11 validation backend)
+- Install: `uv sync --group bempp`. The package imports as **`bempp_cl.api`** (underscore),
+  not `bempp.api` — `import bempp.api` raises `ModuleNotFoundError`.
+- On Apple Silicon, bempp auto-selects the Numba JIT backend (OpenCL unavailable).
+  `pyopencl`/`exafmm` are deliberately not installed.
+- **Exterior Neumann BIE sign** (easy to get backwards): with normal **n = outward from
+  scatterer** (into fluid), the correct exterior BIE is **(K − ½I) p_s = V g_N** and the
+  representation formula is **p_ext = K_pot(p_s) − V_pot(g_N)**. The opposite sign
+  (½I + K, V − K) silently solves the *interior* problem. VERIFIED: Colton & Kress,
+  *Inverse Acoustic and Electromagnetic Scattering Theory*, 3rd ed., Thm 3.3/3.22.
+
 ## Gotchas
 - NumCalc can fail to converge at the highest frequencies (critical/irregular frequencies).
   Detect non-converged steps, retry with more iterations, then flag + interpolate — never
@@ -103,14 +120,10 @@ Pulsating-sphere formula in engineering convention (VERIFIED against NumCalc):
   located, plain-English errors. Driver diaphragms are always app-generated primitives, so
   their elements are auto-tagged for the vibrating boundary condition (no face-guessing).
 
-## V-1 status (resolved, 2026-06-18)
-V-1 was redesigned to a **spherical-cap piston on a rigid sphere** (curved, ε > 0) and now passes:
-BEM directivity vs. the exact spherical-cap closed form (`spherical_cap_directivity`), mean error
-0.6–0.8 dB ≤ the 1 dB gate, at ka_sphere = 1/2/3. With V-2 and V-4 also green, the **Stage-0 gate
-is passed**. See `tests/test_analytic_piston.py` and CHANGELOG [0.1.2]. The flat piston geometry
-(`make_piston_mesh`) is retained only as the documented NumCalc-crash reference.
-
-**Open follow-up (before items 6–7):** the minimal NumCalc writer applies the velocity BC as one
-contiguous `ELEM lo TO hi` range (`ncinp_writer._group_element_range`), so a non-contiguous
-vibrating group silently leaks the BC onto rigid elements in between. The cap mesh works around it
-by ordering cap elements first; real multi-driver meshes need a fail-loud guard or per-element BCs.
+## Stage-0 status (complete, v0.1.0, 2026-06-18)
+V-1 (spherical-cap piston on rigid sphere), V-2 (pulsating sphere), V-4 (DI = 0/4.77 dB) all
+green. See `tests/test_analytic_piston.py`, `test_sphere_benchmark.py`, `test_power_di.py`.
+The flat piston geometry (`make_piston_mesh`) is retained only as the documented NumCalc-crash
+reference. The `ncinp_writer` BC-leak (item 3 open follow-up) was closed in item 5:
+`assemble_box_driver` now guarantees contiguous element-index blocks per group and asserts the
+invariant at return time — `_group_element_runs` emits exact per-run `ELEM lo TO hi` lines.
