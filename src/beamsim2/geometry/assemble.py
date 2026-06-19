@@ -124,7 +124,7 @@ def assemble_box_driver(
                 "Use cap_height=0.0 for a flush disk driver."
             )
 
-    gmsh.initialize()
+    gmsh.initialize(interruptible=False)  # avoids signal.signal() — safe from worker threads
     gmsh.option.setNumber("General.Terminal", 0)
     gmsh.model.add("box_driver_assembly")
 
