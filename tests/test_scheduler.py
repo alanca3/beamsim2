@@ -363,3 +363,125 @@ def test_scheduler_config_defaults():
     assert cfg.ram_safety_factor == pytest.approx(1.1)
     assert cfg.max_concurrency == 12
     assert cfg.retry_max_iterations == 1000
+
+
+# ---------------------------------------------------------------------------
+# on_event callback hook — item 10 addition
+# ---------------------------------------------------------------------------
+
+
+def test_on_event_fires_step_running_and_done(tmp_path):
+    """on_event callback emits step_running and step_done for each step."""
+    import os
+
+    freqs = np.array([250.0, 500.0])
+
+    class _MockProc:
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+    events: list[tuple[str, int, dict]] = []
+
+    def launcher(cmd, work_dir, step):
+        be_dir = os.path.join(work_dir, "be.out", f"be.{step}")
+        os.makedirs(be_dir, exist_ok=True)
+        open(os.path.join(be_dir, "pEvalGrid"), "w").write("data\n")
+        log = "CGS solver: number of iterations = 5, relative error = 1e-9\nEnd time:\n"
+        open(os.path.join(work_dir, f"NC{step}-{step}.out"), "w").write(log)
+        return _MockProc()
+
+    def on_event(event, step, info):
+        events.append((event, step, dict(info)))
+
+    sched = NumCalcScheduler(
+        binary="/fake",
+        config=SchedulerConfig(poll_seconds=0.0),
+        _launcher=launcher,
+        on_event=on_event,
+    )
+    sched.run(str(tmp_path), freqs)
+
+    step_running_events = [(e, s) for e, s, _ in events if e == "step_running"]
+    step_done_events = [(e, s) for e, s, _ in events if e == "step_done"]
+    step_conv_events = [(e, s) for e, s, _ in events if e == "step_converged"]
+
+    assert (
+        len(step_running_events) == 2
+    ), f"Expected 2 step_running events, got {step_running_events}"
+    assert len(step_done_events) == 2, f"Expected 2 step_done events, got {step_done_events}"
+    assert len(step_conv_events) == 2, f"Expected 2 step_converged events, got {step_conv_events}"
+
+
+def test_on_event_default_none_unchanged_behavior(tmp_path):
+    """Omitting on_event (None) must not change existing scheduler behaviour."""
+    import os
+
+    freqs = np.array([250.0])
+
+    class _MockProc:
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+    def launcher(cmd, work_dir, step):
+        be_dir = os.path.join(work_dir, "be.out", f"be.{step}")
+        os.makedirs(be_dir, exist_ok=True)
+        open(os.path.join(be_dir, "pEvalGrid"), "w").write("data\n")
+        log = "CGS solver: number of iterations = 2, relative error = 1e-8\nEnd time:\n"
+        open(os.path.join(work_dir, f"NC{step}-{step}.out"), "w").write(log)
+        return _MockProc()
+
+    sched = NumCalcScheduler(
+        binary="/fake",
+        config=SchedulerConfig(poll_seconds=0.0),
+        _launcher=launcher,
+        # on_event not passed → default no-op
+    )
+    result = sched.run(str(tmp_path), freqs)
+    assert result.convergence_flags[0]
+
+
+def test_on_event_flagged_non_converged(tmp_path):
+    """step_converged event must carry converged=False for non-converged steps."""
+    import os
+
+    freqs = np.array([1000.0])
+
+    class _MockProc:
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+    conv_events: list[dict] = []
+
+    def launcher(cmd, work_dir, step):
+        be_dir = os.path.join(work_dir, "be.out", f"be.{step}")
+        os.makedirs(be_dir, exist_ok=True)
+        open(os.path.join(be_dir, "pEvalGrid"), "w").write("data\n")
+        # Non-converged on first pass; converged on retry (signalled by -niter_max in cmd)
+        if "-niter_max" not in cmd:
+            log = "Warning: Maximum number of iterations is reached!\nEnd time:\n"
+        else:
+            log = "CGS solver: number of iterations = 5, relative error = 1e-9\nEnd time:\n"
+        open(os.path.join(work_dir, f"NC{step}-{step}.out"), "w").write(log)
+        return _MockProc()
+
+    def on_event(event, step, info):
+        if event == "step_converged":
+            conv_events.append(dict(info))
+
+    sched = NumCalcScheduler(
+        binary="/fake",
+        config=SchedulerConfig(poll_seconds=0.0, retry_max_iterations=1000),
+        _launcher=launcher,
+        on_event=on_event,
+    )
+    result = sched.run(str(tmp_path), freqs)
+
+    # After retry the step converges; final step_converged event must reflect that.
+    assert len(conv_events) >= 1
+    assert conv_events[-1]["converged"] is True

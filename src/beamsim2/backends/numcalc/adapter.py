@@ -193,15 +193,18 @@ class NumCalcBackend(BEMBackend):
         packs concurrent processes against the RAM budget, skips completed steps
         for resume (R-08), and retries non-converged steps once (R-07).
 
-        The ``scheduler`` argument is accepted for interface conformance (DR-02)
-        but the adapter always creates its own ``NumCalcScheduler`` internally.
+        If ``scheduler`` is a ``NumCalcScheduler`` instance it is used directly,
+        allowing the caller to inject a progress-wired scheduler.  Otherwise the
+        adapter constructs its own internal scheduler (default, backward-compatible).
 
         Parameters
         ----------
         spec : SolveSpec
             Prepared solve spec from prepare().
-        scheduler : object, optional
-            Ignored. The adapter constructs its own NumCalcScheduler.
+        scheduler : NumCalcScheduler or None, optional
+            If a ``NumCalcScheduler`` is provided it is used verbatim (the
+            orchestrator in ``pipeline/run.py`` wires progress callbacks here).
+            ``None`` (default) → build an internal scheduler with default config.
 
         Returns
         -------
@@ -234,7 +237,12 @@ class NumCalcBackend(BEMBackend):
             time_seconds_per_step=np.full(n_freq, np.nan, dtype=np.float64),
         )
 
-        sched = NumCalcScheduler(binary=self._binary)
+        # Use caller-supplied scheduler if it's a NumCalcScheduler (allows injecting
+        # a progress-wired scheduler from the orchestrator); else build internally.
+        if isinstance(scheduler, NumCalcScheduler):
+            sched = scheduler
+        else:
+            sched = NumCalcScheduler(binary=self._binary)
         return sched.run(
             work_dir=work_dir,
             frequencies=spec.frequency_grid.frequencies,

@@ -4,6 +4,102 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — build-order item 10: headless pipeline orchestrator + PySide6 GUI
+
+### Added
+- **`pipeline/run.py`** — headless end-to-end runner: `SimulationRequest`/
+  `SimulationResult`/`BoxGeometry`/`DriverPlacement`/`ResourceEstimate`
+  dataclasses; `run_simulation(req, backend, progress)` drives Stages A–G
+  (geometry → per-driver unit-velocity BEM solve loop → assembly →
+  `build_dataset` → `write_dataset`/`write_frd`/`write_sofa`); `estimate_resources`
+  calls `backend.estimate` once and scales by M drivers with a coarse heuristic
+  fallback for the always-NaN `time_seconds_per_step`.  Qt-free; testable
+  headlessly with a fake backend.
+
+- **`pipeline/progress.py`** — Qt-free observable solve-state model:
+  `StepState` (QUEUED/RUNNING/DONE/FLAGGED), `ProgressSnapshot` (immutable
+  value: `[M, F]` StepState grid, steps_done/total, RAM, ETA, current_driver,
+  message), `ProgressModel` (subscribe / driver_started / step_running /
+  step_done / driver_finished mutators).  ETA = rolling estimate; RAM = Σ
+  est_ram of RUNNING steps.  The GUI subscribes a bound Qt signal as the single
+  bridge.
+
+- **`backends/numcalc/scheduler.py`** — minimal, default-preserving `on_event`
+  callback hook added to `NumCalcScheduler.__init__` (default no-op → all
+  existing tests unaffected).  Emits `step_running`, `step_done`,
+  `step_converged` at the existing launch/reap/`read_convergence` points,
+  enabling live M×F status grids in the run-monitor (§6 Gameplan).
+
+- **`backends/numcalc/adapter.py`** — `solve()` now honours an injected
+  `NumCalcScheduler` (passed via the `scheduler` arg it previously ignored),
+  enabling progress-wired solves; falls back to its own internal scheduler when
+  `None` or a non-`NumCalcScheduler` is passed.
+
+- **`gui/app.py`** — PySide6 `MainWindow`: four-tab `QTabWidget` (Geometry /
+  Drivers / Simulation / Results), `AppState` dataclass, `SolveWorker`
+  (`QObject + moveToThread`) with `progressChanged`/`finished`/`failed`
+  signals.  The `SolveWorker` builds a `ProgressModel`, subscribes
+  `self.progressChanged.emit` as the sole Qt bridge, then calls
+  `run_simulation(req, progress=progress)`.  File → Open dataset loads an
+  existing HDF5 directly into ResultsTab (no solve needed).
+
+- **`gui/geometry_view.py`** — `GeometryTab`: box dimension spin-boxes + gmsh
+  health-check + `mpl_toolkits.mplot3d` mesh preview (no new dependency;
+  matplotlib already required).  Emits `geometryChanged` to gate the Run button.
+
+- **`gui/parameters_panel.py`** — `DriversTab` (scrollable list of
+  `_DriverRow` + `TSDialog` for T/S / inductance / box-volume entry, derived
+  fs/Qts shown read-only) + `SimulationTab` (frequency range, sphere density
+  preset — only {6,14,26} offered matching `core.sphere` — Estimate/Run
+  buttons) + `RunMonitorWidget` (M×F status grid, progress bar, RAM/ETA
+  labels).  Sphere combo deliberately omits "balloon-5°" until finer Lebedev
+  tables are vendored.
+
+- **`gui/results_view.py`** — `ResultsTab` with five Matplotlib sub-tabs:
+  on-axis (magnitude + phase vs frequency, flagged bins amber), horizontal
+  polar, vertical polar, 3-D balloon (scatter coloured by dB SPL), directivity
+  map (`imshow` freq × elevation angle).  Export panel: Save HDF5, Export .frd,
+  Export SOFA; CLF button present but disabled (SH resampling deferred).
+
+- **`gui/run_monitor.py`** — re-exports `RunMonitorWidget` for discoverability.
+
+- **`tests/test_pipeline_run.py`** — 12 CI-safe orchestrator tests (fake
+  backend): per-driver BC correctness (only group m+1 vibrates), unit cone
+  velocity, 3-driver group assignment, `stacked_h_full → [M,F,N]` shape,
+  H_full identity without terminal, non-convergence flag propagation to
+  `flagged_frequencies` and HDF5, HDF5 round-trip, `estimate_resources` shape,
+  `work_dirs` populated.
+
+- **`tests/test_progress.py`** — 17 CI-safe `ProgressModel` tests: grid
+  initialisation, step-state transitions, RAM accumulation/release, steps_done
+  counter, `driver_finished` flag reconciliation, ETA None until first step,
+  multiple subscribers, out-of-bounds ignored, snapshot grid is a copy.
+
+- **`tests/test_scheduler.py`** — three new tests for the `on_event` hook:
+  `step_running`/`step_done`/`step_converged` events fire correctly; default
+  `None` leaves existing behaviour intact; non-converged step emits
+  `converged=True` after retry.
+
+- **`tests/test_gui_smoke.py`** — 9 GUI smoke tests (offscreen, no binary):
+  `MainWindow` constructs and has four tabs; `ResultsTab.load()` populates from
+  a synthetic dataset; `_OnAxisView`, `_BalloonView`, `_DirectivityMapView`
+  load without exception; `SolveWorker` emits `finished` and `progressChanged`
+  with a fake `run_simulation`; `AppState` defaults; all gui/ modules importable.
+
+- **`tests/test_pipeline_e2e.py`** — `@local_only` end-to-end test: runs
+  `run_simulation` on the V-5 box+2-driver geometry (same constants as
+  `test_phase_origin.py`), asserts `stacked_h_full → [2,3,26]`, HDF5 round-trip,
+  and the V-5 superposition guardrail (`relative_l2 = 1.7e-7`, gate ≤ 1e-3).
+  This is item 10's de-facto acceptance gate (no §7 entry exists for the GUI/
+  orchestrator).
+
+### Notes
+- 3-D rendering uses `mpl_toolkits.mplot3d` (no new dependency); GPU-accelerated
+  balloon (`pyqtgraph`) deferred.  Sphere presets limited to {6,14,26}.
+  CLF export greyed (SH resampling deferred to a later item).
+- GUI does not earn its own semver tag; it rides the Stage-3 `v0.4.0` release
+  (§8 Gameplan) when the full multi-driver NumCalc run is completed.
+
 ## [Unreleased] — build-order item 9: io/ interoperability exports
 
 ### Added
