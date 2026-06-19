@@ -240,13 +240,15 @@ class NumCalcScheduler:
         """
         pending = list(pending)
         in_flight: dict[int, subprocess.Popen] = {}  # 0-based idx → Popen
+        launch_times: dict[int, float] = {}  # 0-based idx → perf_counter at launch
 
         while pending or in_flight:
             # Reap finished processes.
             done = [idx for idx, proc in in_flight.items() if proc.poll() is not None]
             for idx in done:
+                elapsed = time.perf_counter() - launch_times.pop(idx, time.perf_counter())
                 del in_flight[idx]
-                self._on_event("step_done", idx, {})
+                self._on_event("step_done", idx, {"elapsed_seconds": elapsed})
 
             # Launch as many new steps as slots and RAM allow.
             while pending and len(in_flight) < self._config.max_concurrency:
@@ -254,6 +256,7 @@ class NumCalcScheduler:
                 if not self._fits_in_ram(next_idx, in_flight, ram_est):
                     break  # RAM full — wait for in-flight steps to release it.
                 pending.pop(0)
+                launch_times[next_idx] = time.perf_counter()
                 proc = self._launch_step(work_dir, next_idx + 1, extra_args)
                 in_flight[next_idx] = proc
                 self._on_event("step_running", next_idx, {"est_ram": float(ram_est[next_idx])})

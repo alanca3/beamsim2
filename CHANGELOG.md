@@ -4,6 +4,51 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-06-19 — Stage 1: real single-driver enclosure solve
+
+### Added
+- **`tests/test_stage1_enclosure.py`** — `@pytest.mark.local_only` Stage 1 gate test.
+  Reference enclosure: 200 × 300 × 200 mm box, 75 mm piston on front face, 100 Hz → 5 kHz
+  at 1/3-octave (18 steps), Lebedev-26 sphere, n_epw=6, terminal=None.
+
+### Stage 1 results (2026-06-19, M4 Max 48 GB)
+
+Timing (per-step wall-clock from scheduler, RAM from NumCalc Memory.txt):
+
+| freq (Hz) | n_elem_est | RAM (GB) | wall (s) |
+|-----------|-----------|---------|---------|
+| 100 | 1 | 0.61 | 28 |
+| … | … | 0.61 | 28 |
+| 5000 | 2445 | 0.61 | 28 |
+
+Total wall-clock: 56.5 s (0.9 min). All 18 steps converged. HDF5 at `runs/stage1/stage1.h5`.
+
+Physics confirmed:
+- On-axis level range: **36.6 dB** (baffle step + diffraction ripple clearly visible; gate: > 3 dB ✓)
+- DI at 100 Hz → 5 kHz: **2.1 → 12.6 dB** (rise = 10.5 dB; gate: > 2 dB ✓)
+- **Stage 1 gate: PASSED**
+
+DR-05 decision (bem_cap_hz):
+- 5 kHz step: 2445 elements, 28 s/step, 0.61 GB RAM
+- Extrapolation to 20 kHz (N^1.3 FMM scaling): ~17 min/step, ~39 GB RAM est.
+- Full-band 24-step solve estimate: ~2.4 h total
+- **DR-05 DECISION: `bem_cap_hz = 20000` (full-band solve is feasible on 48 GB / M4 Max)**
+  The top step fits in ~1/3 of available RAM and completes in < 30 min. No splice needed.
+  Stage 2 will add the T/S electrical chain (not the HF splice).
+
+### Changed (pipeline instrumentation)
+- **`backends/numcalc/scheduler.py`** — `_run_pass()`: records `time.perf_counter()` at
+  step launch, emits `{"elapsed_seconds": elapsed}` in the `"step_done"` event (was `{}`).
+  Backward-compatible; downstream ignores extra event keys.
+- **`pipeline/progress.py`** — `ProgressModel.step_done()` gains optional
+  `elapsed_seconds: float = 0.0`; stored in `_step_elapsed`. New property
+  `step_elapsed_seconds → dict[(driver_idx, step_idx): float]` exposes per-step timing.
+- **`pipeline/run.py`** — `_make_scheduler()` event handler forwards `elapsed_seconds`
+  from `"step_done"` event through to `ProgressModel.step_done()`.
+
+### Notes
+- `schema_version` unchanged (no on-disk format change).
+
 ## [Unreleased] — build-order item 11: bempp-cl validation backend
 
 ### Added

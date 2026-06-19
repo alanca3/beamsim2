@@ -88,6 +88,7 @@ class ProgressModel:
         # Grid: rows = drivers (0..M-1), cols = freq steps (0..F-1)
         self._grid: np.ndarray = np.full((n_drivers, n_freq), StepState.QUEUED, dtype=object)
         self._running_ram: dict[tuple[int, int], float] = {}  # (m, step) → est_ram
+        self._step_elapsed: dict[tuple[int, int], float] = {}  # (m, step) → wall-clock s
         self._steps_done: int = 0
         self._start_time: Optional[float] = None
         self._current_driver: Optional[str] = None
@@ -121,19 +122,37 @@ class ProgressModel:
             self._running_ram[(m, step)] = est_ram_bytes
         self._emit()
 
-    def step_done(self, m: int, step: int, converged: bool) -> None:
+    def step_done(self, m: int, step: int, converged: bool, elapsed_seconds: float = 0.0) -> None:
         """Called when a frequency step finishes ('step_done' + 'step_converged' events).
 
         For the scheduler's two-event pattern (step_done fires on process exit,
         step_converged fires with the convergence result), callers should call this
         once with the final ``converged`` value; or call step_done twice and let the
         second call with the real converged value win.
+
+        Parameters
+        ----------
+        elapsed_seconds : float
+            Actual wall-clock time for this step in seconds (from scheduler timing).
+            0.0 if not available.
         """
         if 0 <= m < self._n_drivers and 0 <= step < self._n_freq:
             self._grid[m, step] = StepState.DONE if converged else StepState.FLAGGED
             self._running_ram.pop((m, step), None)
             self._steps_done += 1
+            if elapsed_seconds > 0.0:
+                self._step_elapsed[(m, step)] = elapsed_seconds
         self._emit()
+
+    @property
+    def step_elapsed_seconds(self) -> dict:
+        """Wall-clock time per completed step: {(driver_idx, step_idx): seconds}.
+
+        Populated only when the NumCalc scheduler emits timing data (i.e., when
+        run_simulation() is called with a ProgressModel). Values are 0.0 for steps
+        where timing was unavailable.
+        """
+        return dict(self._step_elapsed)
 
     def driver_finished(self, driver_id: str, m: int, flagged: np.ndarray) -> None:
         """Called after the orchestrator's extract() for driver m completes.

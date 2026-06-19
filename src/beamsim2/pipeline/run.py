@@ -420,15 +420,17 @@ def _make_scheduler(
         # the scheduler fires "step_done", then reconcile with the authoritative
         # convergence flags when "step_converged" fires.
         _provisional: dict[int, bool] = {}
+        _elapsed: dict[int, float] = {}  # step → wall-clock seconds from scheduler
 
         def on_event(event: str, step: int, info: dict) -> None:
             if event == "step_running":
                 progress.step_running(m, step, info.get("est_ram", 0.0))
             elif event == "step_done":
                 _provisional[step] = True  # converged assumed until step_converged fires
+                _elapsed[step] = float(info.get("elapsed_seconds", 0.0))
             elif event == "step_converged":
                 converged = bool(info.get("converged", True))
-                progress.step_done(m, step, converged)
+                progress.step_done(m, step, converged, elapsed_seconds=_elapsed.pop(step, 0.0))
                 _provisional.pop(step, None)
 
         return NumCalcScheduler(binary=binary, on_event=on_event)
