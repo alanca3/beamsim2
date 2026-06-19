@@ -105,3 +105,58 @@ uv run python -m beamsim2.gui.app
 **Stage 1 milestone:** Run a single driver in a real enclosure, measure peak RAM and
 wall-clock per step at the top of the band. This sets `bem_cap_hz` (DR-05 decision:
 full-band vs splice) and earns `v0.2.0`. The headless pipeline is now ready to do this.
+
+---
+
+## Build-order item 11 — bempp-cl validation backend (2026-06-19)
+
+### Summary
+
+Item 11 complete and merged to `main` (commit `5451e84`). 268 CI tests unchanged.
+No semver tag — item 11 is off the Stage 0–4 milestone path (explicitly "when time
+allows" in §10).
+
+### What was built
+
+- **`backends/bempp/adapter.py`** — `BemppBackend(BEMBackend)`: independent Galerkin
+  BEM cross-check on NumCalc via bempp-cl 0.4.2 (Numba JIT on Apple Silicon; OpenCL
+  and ExaFMM deliberately not installed). Stateless on-disk pattern (mesh.npz + obs.npz
+  + JSON sidecar) mirrors NumCalc adapter.
+- **`backends/bempp/__init__.py`** — exports `BemppBackend`.
+- **`tests/test_bempp_validation.py`** — V-2 sphere benchmark through bempp, reusing
+  `sphere_benchmark_errors()` unchanged (proves DR-02 abstraction is backend-agnostic).
+- **`pyproject.toml`** — new optional `bempp` dependency group; new `bempp` pytest marker.
+
+### Install
+
+```bash
+uv sync --group bempp   # pulls bempp-cl 0.4.2, numba, llvmlite, meshio
+```
+
+### Test results (V-2 gate: ≤ 0.5 dB, ≤ 5°)
+
+| freq (Hz) | ka    | mean_mag (dB) | mean_phase (°) |
+|-----------|-------|--------------|----------------|
+| 250       | 0.458 | 0.148        | 0.05           |
+| 500       | 0.915 | 0.120        | 0.27           |
+| 1000      | 1.831 | 0.087        | 0.92           |
+
+### Key physics note (bug found and fixed)
+
+The exterior Neumann BIE sign with outward-from-scatterer normal n is:
+  **(K − ½I) p_s = V g_N**  and  **p_ext = K_pot(p_s) − V_pot(g_N)**
+
+Initial code had the opposite sign (interior-problem form). The V-2 phase gate caught
+this immediately (81 dB / 156° error → correct after fix). Reference: Colton & Kress,
+*Inverse Acoustic and Electromagnetic Scattering Theory*, 3rd ed., Thm 3.3 and 3.22.
+
+### Notes
+
+- Neumann datum: `g_N = iωρ v_n` (engineering exp(−iωt); VERIFIED by phase gate).
+- Dense LU (O(T³)); convergence_flags all True. Not for production solves.
+- No pipeline wiring; BemppBackend is instantiated explicitly in the test only.
+- All pre-existing 268 CI tests unchanged. Full suite: `uv run pytest -m 'not local_only'`.
+
+### Next step (unchanged)
+
+**Stage 1 milestone:** Run a single driver in a real enclosure and measure RAM/wall-clock.
