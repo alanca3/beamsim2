@@ -4,6 +4,36 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — build-order item 11: bempp-cl validation backend
+
+### Added
+- **`backends/bempp/adapter.py`** — `BemppBackend(BEMBackend)`: independent
+  Galerkin BEM cross-check on NumCalc via bempp-cl 0.4.2 (Numba JIT on
+  Apple Silicon; OpenCL deliberately omitted). Implements the four-method
+  `BEMBackend` interface (DR-02) with stateless on-disk serialisation
+  (mesh.npz + obs.npz + JSON sidecar) so `prepare()` and `solve()` are
+  separate calls with no bempp objects crossing the boundary.
+  Physics: exterior Neumann Helmholtz BIE — `(K − ½I) p_s = V g_N` on the
+  surface, then `p_ext = K_pot(p_s) − V_pot(g_N)` (Colton & Kress, Thm 3.3
+  and 3.22; both signs VERIFIED by V-2 phase gate). Dense LU solve (O(T³));
+  convergence_flags all True. Neumann datum `g_N = iωρ v_n` (engineering
+  `exp(−iωt)` convention, same as NumCalc and all analytic formulas).
+- **`backends/bempp/__init__.py`** — exports `BemppBackend`.
+- **`tests/test_bempp_validation.py`** — V-2 sphere benchmark through
+  `BemppBackend`, reusing `sphere_benchmark_errors()` unchanged: mean
+  magnitude error ≤ 0.5 dB AND phase ≤ 5° at 250/500/1000 Hz (ka ≈
+  0.46/0.92/1.83). Actual results: 0.15/0.12/0.09 dB, 0.05°/0.27°/0.92°.
+  Two CI-safe conformance tests (no bempp install needed).
+- **`pyproject.toml`** — `[dependency-groups] bempp = ["bempp-cl>=0.4.2"]`
+  optional group (install with `uv sync --group bempp`; default env unaffected).
+  New pytest marker `bempp` registered.
+
+### Notes
+- No pipeline wiring (pipeline/run.py stays NumCalcBackend); bempp is
+  instantiated explicitly in the validation test only.
+- `schema_version` unchanged — no on-disk format change.
+- No milestone tag (item 11 is off the Stage-0→4 milestone path).
+
 ## [Unreleased] — build-order item 10: headless pipeline orchestrator + PySide6 GUI
 
 ### Added
