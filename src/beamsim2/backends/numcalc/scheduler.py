@@ -36,6 +36,12 @@ import numpy as np
 
 from beamsim2.core.types import RawSolveResult, ResourcePlan
 
+# Callback signature: (event_name, 0-based_step_index, info_dict) -> None
+# Events: "step_running" info={"est_ram": float}
+#         "step_done"    info={}
+#         "step_converged" info={"converged": bool}
+EventCallback = Callable[[str, int, dict], None]
+
 # Default budget: 48 GB total − 6 GB OS headroom = 42 GB usable.
 _DEFAULT_RAM_BUDGET_BYTES: float = 42 * 1024**3
 
@@ -138,10 +144,13 @@ class NumCalcScheduler:
         binary: str,
         config: Optional[SchedulerConfig] = None,
         _launcher: Optional[Callable] = None,
+        on_event: Optional[EventCallback] = None,
     ) -> None:
         self._binary = binary
         self._config = config or SchedulerConfig()
         self._launcher = _launcher
+        # No-op by default so headless path and all existing tests are unaffected.
+        self._on_event: EventCallback = on_event if on_event is not None else lambda *_a, **_k: None
 
     def run(
         self,
@@ -199,7 +208,9 @@ class NumCalcScheduler:
             )
             conv_flags = read_convergence(work_dir, n_freq)
 
-        # ── Collect results ──────────────────────────────────────────────────
+        # ── Emit convergence events, then collect results ────────────────────
+        for i in range(n_freq):
+            self._on_event("step_converged", i, {"converged": bool(conv_flags[i])})
         completed_steps = {i for i in range(n_freq) if step_completed(work_dir, i + 1)}
         return RawSolveResult(
             work_dir=work_dir,
@@ -235,6 +246,7 @@ class NumCalcScheduler:
             done = [idx for idx, proc in in_flight.items() if proc.poll() is not None]
             for idx in done:
                 del in_flight[idx]
+                self._on_event("step_done", idx, {})
 
             # Launch as many new steps as slots and RAM allow.
             while pending and len(in_flight) < self._config.max_concurrency:
@@ -244,6 +256,7 @@ class NumCalcScheduler:
                 pending.pop(0)
                 proc = self._launch_step(work_dir, next_idx + 1, extra_args)
                 in_flight[next_idx] = proc
+                self._on_event("step_running", next_idx, {"est_ram": float(ram_est[next_idx])})
 
             if pending or in_flight:
                 time.sleep(self._config.poll_seconds)
