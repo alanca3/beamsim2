@@ -4,6 +4,57 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Interactive driver placement editor (2026-06-19)
+
+### Added (flagged architecture departure — see below)
+- **`src/beamsim2/geometry/faces.py`** — Face-local driver placement model (Qt-free,
+  gmsh-free, numpy only).  Defines `FacePlacement(face_id, u, v, radius)` as the
+  GUI's source of truth for where a driver sits on a box face.  Provides
+  `face_basis`, `face_local_to_spec`, `fits_on_face`, `clamp_uv_to_face`,
+  `world_to_face_uv`, `classify_face`, and `validate_spec_on_box`.  The derived
+  `DriverSpec.center` is always exactly on the face plane, eliminating the "Mesh
+  watertight failure" that occurred when typed coordinates missed the plane.
+- **`tests/test_faces.py`** — 35 CI-safe unit tests for the face-local model
+  (no VTK, Qt, gmsh, or NumCalc required).
+- **`src/beamsim2/gui/geometry_view.py`** — Replaced the static Matplotlib
+  preview with a LEAP-style interactive 3-D driver placement editor (`_DriverEditorCanvas`)
+  backed by PyVista / VTK (`pyvistaqt.QtInteractor`).  Features:
+  - Click any box face to place a driver at the face centroid (Add Driver mode).
+  - Drag a driver — movement locked to the face plane, clamped to face bounds.
+  - Right-click a driver → context menu: **Delete** / **Edit T/S…**.
+  - Box-dimension changes re-derive all face-local driver world-coordinates
+    (centroid-tracking, LEAP-compatible).
+  - Falls back to the matplotlib `_MeshCanvas` static preview when VTK is absent
+    or when running under `QT_QPA_PLATFORM=offscreen` (CI, smoke tests).
+- **`src/beamsim2/gui/app.py`** — Cross-tab driver sync: `GeometryTab.driversChanged`
+  → `DriversTab.refresh` and `DriversTab.driversChanged` → `GeometryTab.refresh_canvas`.
+
+### Fixed
+- **Watertight mesh failure from off-plane driver coordinates** — `assemble_box_driver`
+  now validates every `DriverSpec` against the box face planes *before* calling
+  `gmsh.initialize`, using `validate_spec_on_box` from `faces.py`.  Previously, the
+  docstring promised a `ValueError` but the check was never implemented; the failure
+  surfaced only as a cryptic BEM-mesh "open/non-manifold edges" message.  The new error
+  message names the offending value and the distance in mm, and also catches disks that
+  overflow the face boundary.
+
+### Changed
+- **`src/beamsim2/pipeline/run.py`** — `DriverPlacement` gains a trailing optional
+  field `face_placement: Optional[FacePlacement] = None`.  All existing 3-arg
+  constructions remain valid; V-5 and all test specs unaffected.
+- **`src/beamsim2/gui/parameters_panel.py`** — `DriversTab` gains a public `refresh()`
+  slot; `_edit_driver` now preserves `face_placement` when editing T/S parameters.
+
+### Architecture departure (flagged, DR-06)
+- **PyVista + VTK added as mandatory dependencies** (`pyvista>=0.43`, `pyvistaqt>=0.11`).
+  This departs from DR-06's "matplotlib-only visualization" mandate.  Rationale: the
+  LEAP-style interactive 3-D drag-and-drop placement editor cannot be done without a
+  GPU-accelerated renderer.  Scope is **GUI only** — the core pipeline, backends, and
+  all headless solve paths remain VTK-free.  Matplotlib is retained for the Results tab
+  (plots) and as the driver-placement fallback when VTK is unavailable.
+
+---
+
 ## [Unreleased] — Stage-4 close-the-loop gate (2026-06-19)
 
 ### Added

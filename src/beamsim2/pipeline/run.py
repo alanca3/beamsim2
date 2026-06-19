@@ -48,6 +48,7 @@ from beamsim2.core.types import (
 )
 from beamsim2.driver.terminal import TerminalModel, terminal_responses_for
 from beamsim2.geometry.assemble import DriverSpec
+from beamsim2.geometry.faces import FacePlacement
 from beamsim2.geometry.health import HealthReport
 from beamsim2.geometry.mesh import mesh_geometry
 
@@ -100,6 +101,14 @@ class DriverPlacement:
     spec: DriverSpec
     terminal: Optional[TerminalModel]
     driver_id: str
+    face_placement: Optional[FacePlacement] = None
+    """GUI source-of-truth placement (face_id, u, v, radius).
+
+    Set by the interactive 3-D editor; ``None`` for headless / legacy specs.
+    When present, ``spec.center`` and ``spec.normal`` are derived from this
+    via ``face_local_to_spec`` so they are guaranteed on-plane.  The solver
+    always reads ``spec`` directly — phase origin is preserved (Cardinal Rule).
+    """
 
 
 @dataclass

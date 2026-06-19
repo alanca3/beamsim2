@@ -345,6 +345,10 @@ class DriversTab(QWidget):
             row.removeRequested.connect(self._remove_driver)
             self._list_layout.insertWidget(i, row)
 
+    def refresh(self) -> None:
+        """Public slot: rebuild the driver list rows (called by GeometryTab edits)."""
+        self._rebuild_rows()
+
     def _add_driver(self) -> None:
         dlg = TSDialog(parent=self)
         # Pre-number the new driver
@@ -358,7 +362,10 @@ class DriversTab(QWidget):
         dp = self._state.drivers[index]
         dlg = TSDialog(placement=dp, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.placement:
-            self._state.drivers[index] = dlg.placement
+            result = dlg.placement
+            # Preserve face_placement from original (TSDialog edits T/S, not placement)
+            result.face_placement = dp.face_placement  # type: ignore[misc]
+            self._state.drivers[index] = result
             self._rebuild_rows()
             self.driversChanged.emit()
 

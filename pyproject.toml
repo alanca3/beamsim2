@@ -15,6 +15,8 @@ dependencies = [
     "matplotlib",
     "PySide6",
     "sofar>=1.2.3",
+    "pyvista>=0.43",
+    "pyvistaqt>=0.11",
 ]
 
 [tool.hatch.build.targets.wheel]

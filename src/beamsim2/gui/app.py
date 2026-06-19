@@ -171,6 +171,11 @@ class MainWindow(QMainWindow):
         self._sim_tab.runRequested.connect(self._on_run_requested)
         self._sim_tab.estimateRequested.connect(self._on_estimate_requested)
 
+        # Cross-tab driver sync: canvas edits update the Drivers list tab and vice versa
+        self._geo_tab.driversChanged.connect(self._drv_tab.refresh)
+        self._geo_tab.driversChanged.connect(self._on_drivers_changed)
+        self._drv_tab.driversChanged.connect(self._geo_tab.refresh_canvas)
+
         self._status = QStatusBar()
         self.setStatusBar(self._status)
         self._status.showMessage("Ready")

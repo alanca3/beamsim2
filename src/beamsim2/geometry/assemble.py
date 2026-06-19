@@ -22,6 +22,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from beamsim2.core.types import BoundaryConditions, Mesh
+from beamsim2.geometry.faces import validate_spec_on_box
 from beamsim2.geometry.primitives import _extract_tagged_mesh
 
 # ---------------------------------------------------------------------------
@@ -123,6 +124,22 @@ def assemble_box_driver(
                 "Proud (cap_height > 0) driver assembly is not yet implemented. "
                 "Use cap_height=0.0 for a flush disk driver."
             )
+
+    # ── backstop: validate every driver is on-plane and fits ────────────────
+    # Runs BEFORE gmsh.initialize so callers get a clear, located error instead
+    # of a cryptic "Mesh watertight failure" from the BEM mesher. This implements
+    # the ValueError documented in the docstring above.
+    for drv in drivers:
+        err = validate_spec_on_box(
+            center=drv.center,
+            normal=drv.normal,
+            radius=drv.radius,
+            w=width,
+            h=height,
+            d=depth,
+        )
+        if err is not None:
+            raise ValueError(err)
 
     gmsh.initialize(interruptible=False)  # avoids signal.signal() — safe from worker threads
     gmsh.option.setNumber("General.Terminal", 0)
