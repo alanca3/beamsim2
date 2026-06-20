@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from beamsim2.beamform.covariance import look_vector
+from beamsim2.beamform.covariance import covariance, look_vector
 
 
 def matched_field(H_f: np.ndarray, look_idx: int) -> np.ndarray:
@@ -55,16 +55,56 @@ def ls_pressure_match(
 
     ``w = (conj(H_f) W H_f^T + lam I)^-1 conj(H_f) W b_f`` with ``W = diag(weights)``.
     (Do NOT use the microphone ``(H W H^H + lam I)^-1 H W b`` form — it mirror-steers.)
+
+    Parameters
+    ----------
+    H_f : np.ndarray
+        ``[M, N]`` complex128 — per-driver field at one frequency.
+    b_f : np.ndarray
+        ``[N]`` complex128 — desired pressure pattern on the grid.
+    weights : np.ndarray
+        ``[N]`` float64 — Lebedev/icosphere quadrature weights.
+    lam : float
+        Tikhonov regularization (effort control); ``>= 0``.
+
+    Returns
+    -------
+    np.ndarray
+        ``w[M]`` complex128.
     """
-    raise NotImplementedError("Stage P2-1: LS/pressure-matching not yet implemented.")
+    m = H_f.shape[0]
+    cw = np.conj(H_f) * weights[None, :]  # conj(H_f) W  [M, N]
+    a = cw @ H_f.T  # conj(H_f) W H_f^T   [M, M] Hermitian PSD
+    rhs = cw @ b_f  # conj(H_f) W b_f     [M]
+    return np.linalg.solve(a + lam * np.eye(m), rhs)  # [M]
 
 
 def mvdr(H_f: np.ndarray, look_idx: int, weights: np.ndarray, eps: float) -> np.ndarray:
     """MVDR (minimum-variance distortionless response), loaded (Stage P2-1).
 
     ``w = (R+eps I)^-1 c / (c^H (R+eps I)^-1 c)``, ``c = conj(H_f[:, look])``.
+
+    Parameters
+    ----------
+    H_f : np.ndarray
+        ``[M, N]`` complex128 — per-driver field at one frequency.
+    look_idx : int
+        Look-direction index in the grid.
+    weights : np.ndarray
+        ``[N]`` float64 — quadrature weights (build the covariance).
+    eps : float
+        Diagonal loading (robustness; larger -> toward delay-and-sum).
+
+    Returns
+    -------
+    np.ndarray
+        ``w[M]`` complex128 (distortionless: ``c^H w == 1``).
     """
-    raise NotImplementedError("Stage P2-1: MVDR not yet implemented.")
+    r = covariance(H_f, weights)  # [M, M]
+    c = look_vector(H_f, look_idx)  # [M]
+    m = H_f.shape[0]
+    rinv_c = np.linalg.solve(r + eps * np.eye(m), c)  # [M]
+    return rinv_c / (np.conj(c) @ rinv_c)
 
 
 def lcmv(
@@ -74,8 +114,37 @@ def lcmv(
     weights: np.ndarray,
     eps: float,
 ) -> np.ndarray:
-    """LCMV with hard nulls (Stage P2-1). ``w = R^-1 C (C^H R^-1 C)^-1 g``."""
-    raise NotImplementedError("Stage P2-1: LCMV not yet implemented.")
+    """LCMV with hard nulls (Stage P2-1). ``w = R^-1 C (C^H R^-1 C)^-1 g``.
+
+    Constraints: unit response toward ``look_idx`` and exact zeros toward each
+    ``null_idx``. At most ``M - 1`` independent nulls (M = number of drivers).
+
+    Parameters
+    ----------
+    H_f : np.ndarray
+        ``[M, N]`` complex128.
+    look_idx : int
+        Look-direction index (constrained to unit response).
+    null_idx : list[int]
+        Direction indices constrained to zero response.
+    weights : np.ndarray
+        ``[N]`` float64 quadrature weights.
+    eps : float
+        Diagonal loading.
+
+    Returns
+    -------
+    np.ndarray
+        ``w[M]`` complex128.
+    """
+    r = covariance(H_f, weights)  # [M, M]
+    m = H_f.shape[0]
+    cols = [look_vector(H_f, look_idx)] + [look_vector(H_f, j) for j in null_idx]
+    c_mat = np.column_stack(cols)  # [M, K]
+    g = np.zeros(c_mat.shape[1], dtype=np.complex128)  # [K]
+    g[0] = 1.0  # unit toward look, zero toward nulls
+    rinv_c = np.linalg.solve(r + eps * np.eye(m), c_mat)  # [M, K]
+    return rinv_c @ np.linalg.solve(c_mat.conj().T @ rinv_c, g)  # [M]
 
 
 def luo_mscd(A: np.ndarray, R: np.ndarray, c: np.ndarray, tau: float) -> np.ndarray:
