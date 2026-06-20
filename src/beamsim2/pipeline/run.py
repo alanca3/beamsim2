@@ -38,7 +38,7 @@ import numpy as np
 
 from beamsim2.assembly.tensor import RadiationDataset, build_dataset
 from beamsim2.backends.base import BEMBackend
-from beamsim2.core.sphere import lebedev
+from beamsim2.core.sphere import make_observation_grid
 from beamsim2.core.types import (
     BoundaryConditions,
     ComplexField,
@@ -122,10 +122,13 @@ class SimulationRequest:
         M drivers.  Solve order matches list order.
     frequencies : FrequencyGrid
         [F] float64, Hz.
+    sphere_scheme : str
+        ``"lebedev"`` (exact quadrature, orders {6, 14, 26}) or ``"icosphere"``
+        (near-uniform "Balloon" grid scaling to thousands of points).
     sphere_n_points : int
-        Lebedev quadrature order.  Only {6, 14, 26} are implemented
-        (``core.sphere.lebedev``); offering anything else raises
-        ``NotImplementedError`` in ``lebedev()``.
+        Target direction count.  For ``"lebedev"`` it is the exact order ({6, 14, 26});
+        for ``"icosphere"`` the smallest subdivision with at least this many points is
+        used (see ``core.sphere.make_observation_grid``).
     sphere_radius : float
         Observation sphere radius in metres.
     config : SolverConfig
@@ -141,6 +144,7 @@ class SimulationRequest:
     geometry: BoxGeometry
     drivers: list[DriverPlacement]
     frequencies: FrequencyGrid
+    sphere_scheme: str = "lebedev"
     sphere_n_points: int = 26
     sphere_radius: float = 1.0
     config: SolverConfig = field(default_factory=SolverConfig)
@@ -305,7 +309,9 @@ def run_simulation(
     # mesh.group_tags: 1..M = driver groups, M+1 = shell (sound-hard).
     # bc_all (all vibrating) is only used for estimate, not for per-driver solves.
 
-    obs: ObservationPoints = lebedev(n_points=req.sphere_n_points, radius=req.sphere_radius)
+    obs: ObservationPoints = make_observation_grid(
+        req.sphere_scheme, req.sphere_n_points, radius=req.sphere_radius
+    )
 
     # ── Stage D/E: per-driver BEM solves ─────────────────────────────────────
     # For each driver m, build a BoundaryConditions with ONLY group m+1 vibrating;

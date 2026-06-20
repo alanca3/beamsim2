@@ -2,9 +2,9 @@
 
 Build-order item 10, Tabs 2 and 3 (§6 Gameplan — parameter entry and run controls).
 
-Sphere-density presets are limited to Lebedev {6, 14, 26} — the only orders
-implemented in ``core.sphere``.  Higher-order options ("balloon-5°") are deferred
-until finer Lebedev tables are vendored.
+Sphere-density presets offer exact-quadrature Lebedev {6, 14, 26} plus near-uniform
+"Balloon" icosphere grids (642 / 2562 / 10242 points) for the dense directions Phase-2
+beam design and audit need (``core.sphere.make_observation_grid``).
 """
 
 from __future__ import annotations
@@ -41,11 +41,16 @@ from beamsim2.pipeline.run import (
     SimulationRequest,
 )
 
-# Only these Lebedev orders are implemented in core.sphere
+# (label, scheme, target_point_count).  Lebedev orders {6,14,26} carry exact quadrature
+# weights; the "Balloon" presets use the near-uniform icosphere (core.sphere.icosphere)
+# to reach the hundreds-to-thousands of directions Phase-2 beam design / audit needs.
 _SPHERE_PRESETS = [
-    ("Coarse (6 points)", 6),
-    ("Standard (14 points)", 14),
-    ("Fine (26 points)", 26),
+    ("Coarse (6 points)", "lebedev", 6),
+    ("Standard (14 points)", "lebedev", 14),
+    ("Fine (26 points)", "lebedev", 26),
+    ("Balloon (642 points)", "icosphere", 642),
+    ("Balloon (2562 points)", "icosphere", 2562),
+    ("Balloon (10242 points)", "icosphere", 10242),
 ]
 
 # Fractional-octave resolution presets → step size in Hz for FrequencyGrid
@@ -513,7 +518,7 @@ class SimulationTab(QWidget):
         sphere_box = QGroupBox("Observation sphere")
         sphere_form = QFormLayout(sphere_box)
         self._sphere_combo = QComboBox()
-        for label, _ in _SPHERE_PRESETS:
+        for label, *_ in _SPHERE_PRESETS:
             self._sphere_combo.addItem(label)
         self._sphere_combo.setCurrentIndex(2)  # default fine-26
         sphere_form.addRow("Density:", self._sphere_combo)
@@ -601,7 +606,7 @@ class SimulationTab(QWidget):
         _, _, frac_oct = _RESOLUTION_PRESETS[self._res_combo.currentIndex()]
         freqs = _build_freq_grid(f_lo, f_hi, frac_oct)
 
-        _, n_pts = _SPHERE_PRESETS[self._sphere_combo.currentIndex()]
+        _, sphere_scheme, n_pts = _SPHERE_PRESETS[self._sphere_combo.currentIndex()]
 
         out_h5 = self._out_path.text().strip() or None
 
@@ -609,6 +614,7 @@ class SimulationTab(QWidget):
             geometry=state.geometry,
             drivers=list(state.drivers),
             frequencies=freqs,
+            sphere_scheme=sphere_scheme,
             sphere_n_points=n_pts,
             sphere_radius=self._sphere_radius.value(),
             config=state.config,
