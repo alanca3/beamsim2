@@ -50,8 +50,13 @@ class TargetSpec:
         Design band ``(f_lo, f_hi)``; out-of-band handling per engine.
     wng_floor_db : float
         The single robustness knob: white-noise-gain floor in dB (see ``regularize``).
+    accept_halfangle_deg : float
+        Half-angle of the "accept" cap about the steering direction (constant-DI engine #2).
+    target_gdi_db : float | None
+        Desired constant generalized directivity index (dB) for ``engine="constant_di"``.
+        ``None`` -> use the maximum feasible value (the min over frequency of the ceiling).
     engine : str
-        ``"delay_sum" | "ls" | "mvdr" | "lcmv" | "luo_mscd" | "luo_mecd"``.
+        ``"delay_sum" | "ls" | "mvdr" | "lcmv" | "max_directivity" | "constant_di"``.
     """
 
     mode: str = "preset"
@@ -62,6 +67,8 @@ class TargetSpec:
     custom_target: np.ndarray | None = None
     band_hz: tuple[float, float] = (20.0, 20000.0)
     wng_floor_db: float = -6.0
+    accept_halfangle_deg: float = 60.0
+    target_gdi_db: float | None = None
     engine: str = "ls"
 
 
@@ -152,8 +159,8 @@ def build_target(spec: TargetSpec, directions, frequencies: np.ndarray) -> Targe
     look_idx = int(np.argmax(cos_ang))
     null_idx = [int(np.argmax(uv @ (np.asarray(d, float) / np.linalg.norm(d)))) for d in spec.nulls]
 
-    # Accept = forward cap (60 deg half-angle by default); reject = whole sphere.
-    accept_mask = (cos_ang >= np.cos(np.deg2rad(60.0))).astype(np.float64)  # [N]
+    # Accept = forward cap about the steering axis; reject = whole sphere.
+    accept_mask = (cos_ang >= np.cos(np.deg2rad(spec.accept_halfangle_deg))).astype(np.float64)
     reject_mask = np.ones(uv.shape[0], dtype=np.float64)  # [N]
 
     return Target(

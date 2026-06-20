@@ -43,6 +43,31 @@ on `feature/phase2-filter-designer` (build order P2-0…P2-5).
 - Tests: `test_beamform_convention` (V-RT + bug-injection mirror-steer control),
   `test_sphere_dense`, `test_sh_transform` (V-SH round-trip), `test_contract_phase2`.
 
+### Stage P2-1 — LS/pressure-matching engine (engine #1) + WNG robustness
+- **`beamform/weights.py`**: `ls_pressure_match` (`w=(conj(H)WHᵀ+λI)⁻¹conj(H)Wb` — house
+  convention, not the mirror-steering mic-array form), loaded MVDR, LCMV hard nulls.
+- **`beamform/regularize.py`**: the single robustness knob — a white-noise-gain floor solved
+  by monotone bisection on the diagonal loading; `lambda_for_ls`.
+- **`beamform/targets.py`**: `build_target` for presets (omni/cardioid/super/hyper/fig8/
+  wide/narrow), continuous cardioid order, steering, and arbitrary custom patterns.
+- **`beamform/forward.py`** + **`design.py`**: achieved DI / −6 dB beamwidth / target error;
+  `design(ds, spec) -> DesignResult` with a `feasible_mask` (flags where the array can't meet
+  the target/floor — never silent garbage).
+- Tests (`test_beamform_engine.py`): first-order DI anchors (cardioid 4.771 / super 5.719 /
+  hyper 6.021), LS cardioid in the achievable regime, all engines steer, WNG floor respected
+  + flagged above ceiling, LCMV null < −40 dB, WNG-monotone/distortionless invariants.
+
+### Stage P2-2 — Luo constant-directivity engine (engine #2) + V-CBT
+- **`beamform/weights.py`**: `max_directivity` (generalized eigenproblem — the per-frequency
+  directivity ceiling) and `luo_mscd` (max-sensitivity constant-directivity QCQP via the
+  closed-form secular root). `design.py` adds the two-pass `constant_di` engine that holds the
+  generalized directivity index constant across frequency (exact, by construction). MECD and
+  GRPQ generalized-crossovers are deferred follow-ups.
+- Tests (`test_beamform_constant_di.py`): GDI constant across frequency; max-directivity
+  varies and dominates; MSCD distortionless with zero quadratic; **V-CBT** — a Legendre-shaded
+  spherical-cap CBT holds a constant −6 dB beamwidth ≈ 0.64·(2θ₀) above cutoff (matching Keele)
+  while the unshaded cap does not.
+
 ## [Unreleased] — Fix click-to-place driver: instant placement + drag (2026-06-19)
 
 ### Fixed

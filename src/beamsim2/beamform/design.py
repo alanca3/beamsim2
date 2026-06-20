@@ -24,7 +24,13 @@ from beamsim2.beamform.regularize import (
     white_noise_gain_db,
 )
 from beamsim2.beamform.targets import TargetSpec, build_target
-from beamsim2.beamform.weights import lcmv, ls_pressure_match, matched_field
+from beamsim2.beamform.weights import (
+    lcmv,
+    ls_pressure_match,
+    luo_mscd,
+    matched_field,
+    max_directivity,
+)
 
 
 @dataclass
@@ -85,6 +91,22 @@ def design(ds, spec: TargetSpec) -> DesignResult:
     wng_db = np.zeros(n_f)  # [F]
     feasible = np.ones(n_f, dtype=bool)  # [F]
 
+    # Constant-DI (engine #2) is a two-pass: pass 1 finds each frequency's directivity
+    # ceiling tau_max; the constant target tau* is the min over frequency (so it is feasible
+    # everywhere) capped by any requested target_gdi_db. Pass 2 runs MSCD at that fixed tau*.
+    tau_star: float | None = None
+    if spec.engine == "constant_di":
+        tau_maxes = []
+        for f in range(n_f):
+            a_mat = covariance(h[:, f, :], w_quad, mask=target.accept_mask)
+            r_mat = covariance(h[:, f, :], w_quad, mask=target.reject_mask)
+            _, tau_max = max_directivity(a_mat, r_mat)
+            tau_maxes.append(tau_max)
+        ceiling = float(np.min(tau_maxes)) * 0.98  # just below the min ceiling -> always feasible
+        if spec.target_gdi_db is not None:
+            ceiling = min(ceiling, 10.0 ** (spec.target_gdi_db / 10.0))
+        tau_star = ceiling
+
     for f in range(n_f):
         h_f = h[:, f, :]  # [M, N]
         c = look_vector(h_f, look)  # [M]
@@ -104,6 +126,19 @@ def design(ds, spec: TargetSpec) -> DesignResult:
             eps, feas = solve_loading_for_wng(r, c, spec.wng_floor_db)
             w_f = lcmv(h_f, look, target.null_idx, w_quad, eps)
             feasible[f] = feas
+        elif spec.engine == "max_directivity":
+            a_mat = covariance(h_f, w_quad, mask=target.accept_mask)
+            r_mat = covariance(h_f, w_quad, mask=target.reject_mask)
+            w_f, _ = max_directivity(a_mat, r_mat, c=c)
+        elif spec.engine == "constant_di":
+            a_mat = covariance(h_f, w_quad, mask=target.accept_mask)
+            r_mat = covariance(h_f, w_quad, mask=target.reject_mask)
+            try:
+                w_f = luo_mscd(a_mat, r_mat, c, tau_star)
+            except ValueError:
+                # tau* not feasible at this bin (edge of band) -> fall back to max directivity.
+                w_f, _ = max_directivity(a_mat, r_mat, c=c)
+                feasible[f] = False
         else:
             raise ValueError(f"Unknown engine {spec.engine!r}.")
         weights[:, f] = w_f
@@ -122,4 +157,6 @@ def design(ds, spec: TargetSpec) -> DesignResult:
         "wng_floor_db": spec.wng_floor_db,
         "look_idx": look,
     }
+    if tau_star is not None:
+        attrs["constant_gdi_db"] = 10.0 * np.log10(tau_star)
     return DesignResult(weights=weights, steered_field=p, metrics=metrics, spec=spec, attrs=attrs)

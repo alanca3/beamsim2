@@ -147,11 +147,105 @@ def lcmv(
     return rinv_c @ np.linalg.solve(c_mat.conj().T @ rinv_c, g)  # [M]
 
 
+def max_directivity(
+    A: np.ndarray, R: np.ndarray, *, eps: float = 1e-9, c: np.ndarray | None = None
+) -> tuple[np.ndarray, float]:
+    """Maximum-directivity weights and the achievable directivity ceiling at one frequency.
+
+    Maximizing the generalized Rayleigh quotient ``w^H A w / w^H R w`` is the generalized
+    eigenproblem ``A w = tau R w``; the top eigenpair gives the max-directivity beamformer
+    and ``tau_max`` (the per-frequency directivity ceiling used to pick a feasible constant
+    target). This is Luo's "pass 1".
+
+    Parameters
+    ----------
+    A : np.ndarray
+        ``[M, M]`` accept-region covariance (Hermitian PSD).
+    R : np.ndarray
+        ``[M, M]`` reject-region covariance (Hermitian PSD).
+    eps : float
+        Diagonal loading on ``R`` for a well-posed generalized eigenproblem.
+    c : np.ndarray | None
+        If given, the weights are scaled to the distortionless normalization ``c^H w = 1``;
+        otherwise unit-norm.
+
+    Returns
+    -------
+    w : np.ndarray
+        ``[M]`` complex128 max-directivity weights.
+    tau_max : float
+        The directivity ceiling (top generalized eigenvalue ``A`` vs ``R``).
+    """
+    from scipy.linalg import eigh
+
+    m = A.shape[0]
+    evals, evecs = eigh(A, R + eps * np.eye(m))  # ascending
+    w = evecs[:, -1]  # top generalized eigenvector
+    if c is not None:
+        w = w / (np.conj(c) @ w)  # distortionless scaling
+    return w, float(evals[-1])
+
+
 def luo_mscd(A: np.ndarray, R: np.ndarray, c: np.ndarray, tau: float) -> np.ndarray:
-    """Luo MSCD (max-sensitivity constant-directivity) QCQP at fixed tau (Stage P2-2)."""
-    raise NotImplementedError("Stage P2-2: Luo MSCD not yet implemented.")
+    """Luo MSCD (max-sensitivity constant-directivity) QCQP at fixed ``tau`` (Stage P2-2).
+
+    Solves ``min ||w||^2  s.t.  w^H D w = 0, c^H w = 1`` with ``D = A - tau R`` — the
+    minimum-norm distortionless beamformer whose generalized directivity index equals the
+    *constant* ``tau`` at this frequency. Stationarity gives ``w(lam) = mu (I - lam D)^-1 c``
+    with ``mu = 1/(c^H (I - lam D)^-1 c)``; the scalar ``lam`` is the root of
+    ``w(lam)^H D w(lam) = 0`` nearest 0, bracketed between the pole reciprocals
+    ``1/lambda_min(D) < 0 < 1/lambda_max(D)`` (where ``I - lam D`` stays positive definite).
+
+    Parameters
+    ----------
+    A, R : np.ndarray
+        ``[M, M]`` accept / reject covariance.
+    c : np.ndarray
+        ``[M]`` look vector (house convention).
+    tau : float
+        The fixed constant directivity factor (must satisfy ``tau_min < tau < tau_max`` so
+        ``D`` is indefinite and a real root exists).
+
+    Returns
+    -------
+    np.ndarray
+        ``w[M]`` complex128 (GDI ``== tau`` by construction, distortionless).
+
+    Raises
+    ------
+    ValueError
+        If ``D`` is not indefinite at ``tau`` (no valid constant-DI solution there).
+    """
+    from scipy.optimize import brentq
+
+    m = A.shape[0]
+    d = A - tau * R  # [M, M] Hermitian, indefinite for tau in (tau_min, tau_max)
+    ev = np.linalg.eigvalsh(d)  # ascending real
+    if ev[0] >= 0 or ev[-1] <= 0:
+        raise ValueError(
+            f"tau={tau} does not make A - tau R indefinite (eig range [{ev[0]:.3g}, "
+            f"{ev[-1]:.3g}]); no constant-DI solution at this frequency."
+        )
+
+    def w_of(lam: float) -> np.ndarray:
+        x = np.linalg.solve(np.eye(m) - lam * d, c)
+        return x / (np.conj(c) @ x)
+
+    def quad(lam: float) -> float:
+        w = w_of(lam)
+        return float(np.real(np.conj(w) @ d @ w))
+
+    lo = (1.0 / ev[0]) * (1.0 - 1e-9)  # just inside the negative pole
+    hi = (1.0 / ev[-1]) * (1.0 - 1e-9)  # just inside the positive pole
+    lam = brentq(quad, lo, hi, xtol=1e-15, rtol=1e-13)
+    return w_of(lam)
 
 
 def luo_mecd(A: np.ndarray, R: np.ndarray, tau: float) -> np.ndarray:
-    """Luo MECD (max-efficiency constant-directivity) QCQP at fixed tau (Stage P2-2)."""
-    raise NotImplementedError("Stage P2-2: Luo MECD not yet implemented.")
+    """Luo MECD (max-efficiency constant-directivity) QCQP at fixed tau (DEFERRED).
+
+    MECD maximizes ``w^H A w`` under ``w^H D w = 0, ||w|| = 1`` via projected ascent over the
+    quadric ``w^H D w = 0``. Deferred: the constant-DI capability is provided by MSCD
+    (distortionless, closed-form secular root); MECD's quadric projection is a follow-up.
+    """
+    raise NotImplementedError("MECD is deferred; use luo_mscd for constant directivity.")
