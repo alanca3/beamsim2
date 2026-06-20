@@ -27,9 +27,21 @@ on `feature/phase2-filter-designer` (build order P2-0…P2-5).
 - House sign convention pinned (DR-P2-02): the coded forward model is `P=Σ_m w_m·H_m`; the
   microphone-array conjugate convention would silently mirror-steer. A round-trip steering test
   is the arbiter (Stage P2-0a). Cardinal rule preserved — the beamformer never re-zeroes a driver.
-- **Known prerequisite (DR-P2-06):** the simulator's sphere grid currently tops out at Lebedev-26;
-  beam design/audit needs thousands of points → Stage P2-0b expands `core/sphere.py` to dense
-  Lebedev grids, and P2-0c implements the SH transform/resampling.
+
+### Stage P2-0 — foundation (grid + SH + contract hardening)
+- **`core/sphere.py`**: `icosphere(subdivisions)` near-uniform grid (no vendored tables;
+  spherical-area weights summing to 4π) scaling to thousands of points (2562 / 10242), plus a
+  `make_observation_grid(scheme, n_points)` dispatcher. Resolves DR-P2-06 — the simulator can now
+  produce the dense directions beam design/audit needs (previously capped at Lebedev-26).
+- **GUI**: new "Balloon (642 / 2562 / 10242 points)" observation-sphere presets;
+  `SimulationRequest` gains `sphere_scheme`.
+- **`core/sh_transform.py`**: spherical-harmonic forward (least-squares / quadrature) + inverse
+  + `resample` to arbitrary directions / regular lat-lon grid / great-circle arcs — the bridge
+  from the scattered solve grid to VituixCAD/REW polar arcs, CLF, and CBT beamwidth.
+- **Contract hardening**: `pipeline/run.py` writes `diaphragm_area`; `io/hdf5_store.read_dataset`
+  guards `schema_version` (warns on missing/minor mismatch, refuses incompatible major).
+- Tests: `test_beamform_convention` (V-RT + bug-injection mirror-steer control),
+  `test_sphere_dense`, `test_sh_transform` (V-SH round-trip), `test_contract_phase2`.
 
 ## [Unreleased] — Fix click-to-place driver: instant placement + drag (2026-06-19)
 
