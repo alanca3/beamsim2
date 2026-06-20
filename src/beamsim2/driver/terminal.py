@@ -187,6 +187,31 @@ def terminal_response(
 # ---------------------------------------------------------------------------
 
 
+def default_terminal_model(name: str = "driver") -> TerminalModel:
+    """Build a TerminalModel with standard woofer defaults.
+
+    Defaults mirror TSDialog's spin-box initial values so a click-placed driver
+    shows the same numbers when the user opens Edit T/S to tune it.
+
+    Parameters
+    ----------
+    name : str
+        Human-readable driver identifier (typically the driver_id string).
+
+    Returns
+    -------
+    TerminalModel
+        Re=6 Ω, Bl=7 T·m, Mms=12 g, Cms=0.8 mm/N, Rms=1 N·s/m,
+        Sd=133 cm², LR-2 inductance Le=0.5 mH / Le2=0.2 mH / Re2=3 Ω.
+    """
+    ts = TSParams(Re=6.0, Bl=7.0, Mms=0.012, Cms=8e-4, Rms=1.0, Sd=0.0133)
+    return TerminalModel(
+        ts=ts,
+        inductance=LR2Ladder(Le=0.5e-3, Le2=0.2e-3, Re2=3.0),
+        name=name,
+    )
+
+
 def terminal_responses_for(
     models: list[TerminalModel],
     frequencies: np.ndarray,

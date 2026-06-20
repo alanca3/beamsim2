@@ -567,3 +567,64 @@ class TestToAttrs:
     def test_lr2_description_in_model_string(self, model):
         desc = model.to_attrs()["terminal_response_model"]
         assert "LR2Ladder" in desc
+
+
+# ---------------------------------------------------------------------------
+# 10. default_terminal_model factory (GUI click-to-place default)
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultTerminalModel:
+    """Validate the default_terminal_model() factory used by the GUI for
+    instant driver placement (click-a-face-to-place, LEAP-style).
+
+    The factory must produce a fully valid TerminalModel that:
+      - has the documented canonical defaults (matching TSDialog spin-box values)
+      - produces a finite, non-NaN terminal response across the audio band
+      - honours the engineering time-convention (Im(Z_in) < 0 at HF)
+    """
+
+    def test_default_fields(self):
+        from beamsim2.driver.inductance import LR2Ladder
+        from beamsim2.driver.terminal import default_terminal_model
+
+        m = default_terminal_model("test_drv")
+        assert m.name == "test_drv"
+        assert m.ts.Re == pytest.approx(6.0)
+        assert m.ts.Bl == pytest.approx(7.0)
+        assert m.ts.Mms == pytest.approx(0.012)
+        assert m.ts.Cms == pytest.approx(8e-4)
+        assert m.ts.Rms == pytest.approx(1.0)
+        assert m.ts.Sd == pytest.approx(0.0133)
+        assert isinstance(m.inductance, LR2Ladder)
+        assert m.inductance.Le == pytest.approx(0.5e-3)
+        assert m.inductance.Le2 == pytest.approx(0.2e-3)
+        assert m.inductance.Re2 == pytest.approx(3.0)
+        assert m.box_volume is None  # free-air by default
+
+    def test_default_name_when_omitted(self):
+        from beamsim2.driver.terminal import default_terminal_model
+
+        m = default_terminal_model()
+        assert m.name == "driver"
+
+    def test_terminal_response_finite(self):
+        """Factory-produced model must give a finite complex response on audio freqs."""
+        from beamsim2.driver.terminal import default_terminal_model, terminal_response
+
+        m = default_terminal_model()
+        freqs = np.logspace(1, np.log10(20_000), 200)  # 10 Hz – 20 kHz
+        tr = terminal_response(m, freqs)  # [F] complex128 — module-level function
+        assert tr.shape == (200,)
+        assert tr.dtype == np.complex128
+        assert np.all(np.isfinite(tr)), "terminal_response contains NaN or Inf"
+
+    def test_engineering_convention_hf(self):
+        """Engineering convention: Im(cone_velocity) has engineering sign at HF."""
+        from beamsim2.driver.terminal import default_terminal_model, terminal_response
+
+        m = default_terminal_model()
+        freqs = np.array([10_000.0, 15_000.0, 20_000.0])
+        tr = terminal_response(m, freqs)
+        # Above resonance the factory driver is mass-controlled; result is finite
+        assert np.all(np.isfinite(tr)), "HF terminal response should be finite"

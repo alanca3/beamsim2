@@ -228,6 +228,10 @@ class _DriverEditorCanvas(QWidget):
         self._dragging: bool = False
         self._drag_idx: Optional[int] = None
         self._drag_face_id: Optional[int] = None
+        self._saved_style: Optional[object] = None  # interactor style saved before drag
+
+        # Camera: only reset_camera on first render or after box dims change
+        self._camera_initialized: bool = False
 
         # Wire VTK observers
         iren = self._plotter.iren.interactor
@@ -267,6 +271,9 @@ class _DriverEditorCanvas(QWidget):
         if not _PV_OK:
             return
 
+        # Reset camera only on first render or when box dimensions change
+        dims_changed = (w, h, d) != (self._w, self._h, self._d)
+
         self._w, self._h, self._d = w, h, d
         self._placements = list(placements)
         self._selected_idx = selected_idx
@@ -291,7 +298,9 @@ class _DriverEditorCanvas(QWidget):
 
         # ── axis labels ──────────────────────────────────────────────────────
         self._plotter.add_axes(xlabel="x", ylabel="y", zlabel="z", interactive=False)
-        self._plotter.reset_camera()
+        if not self._camera_initialized or dims_changed:
+            self._plotter.reset_camera()
+            self._camera_initialized = True
         self._plotter.render()
 
     def set_mode(self, mode: str) -> None:
@@ -482,9 +491,12 @@ class _DriverEditorCanvas(QWidget):
                 self._drag_face_id = classify_face(
                     dp.spec.center, dp.spec.normal, self._w, self._h, self._d
                 )
-            # Suppress camera rotation during drag
-            self._plotter.iren.interactor.GetInteractorStyle().OnLeftButtonDown()
-            iren.CreateTimer(1)  # suppress default camera move via tiny timer trick
+            # Swap to a no-op interactor style so camera doesn't rotate during drag;
+            # restored in _on_left_release.
+            import vtk  # noqa: PLC0415  (local import — VTK only available when _PV_OK)
+
+            self._saved_style = iren.GetInteractorStyle()
+            iren.SetInteractorStyle(vtk.vtkInteractorStyleUser())
         else:
             # Hit the box face
             face_id = classify_face(point, normal, self._w, self._h, self._d)
@@ -534,13 +546,19 @@ class _DriverEditorCanvas(QWidget):
         self._plotter.render()
 
     def _on_left_release(self, obj, event) -> None:
-        """End drag: commit the updated placement."""
+        """End drag: restore camera interactor style and commit the updated placement."""
         if not _PV_OK or not self._dragging:
             return
         self._dragging = False
         idx = self._drag_idx
         self._drag_idx = None
         self._drag_face_id = None
+
+        # Restore normal camera interaction (was swapped to no-op during drag)
+        if self._saved_style is not None:
+            iren = self._plotter.iren.interactor
+            iren.SetInteractorStyle(self._saved_style)
+            self._saved_style = None
 
         if idx is not None and idx < len(self._placements):
             dp = self._placements[idx]
@@ -716,14 +734,20 @@ class GeometryTab(QWidget):
             self._add_drv_btn.setText("+ Add Driver")
 
     def _on_canvas_driver_added(self, face_id: int, default_radius: float) -> None:
-        """User clicked an empty face in add mode → open TSDialog, then place."""
-        from beamsim2.gui.parameters_panel import TSDialog
+        """User clicked an empty face in add mode → place driver instantly with defaults.
+
+        LEAP-style: the driver appears immediately at the face centre with a standard
+        woofer T/S.  The user can right-click → Edit T/S to tune parameters afterward.
+        No modal dialog on click — the previous stub-TSParams/TSDialog approach crashed
+        because TSParams has no 'Le' field and required 'Sd' was missing.
+        """
+        from beamsim2.driver.terminal import default_terminal_model
         from beamsim2.pipeline.run import DriverPlacement
 
         # Deactivate add mode
         self._add_drv_btn.setChecked(False)
 
-        # Build a new face-local placement centred on the face
+        # Face-local placement at the face centre (u=v=0)
         fp = FacePlacement(
             face_id=face_id,
             u=0.0,
@@ -732,44 +756,20 @@ class GeometryTab(QWidget):
         )
         w, h, d = self._w.value(), self._h.value(), self._d.value()
         new_spec = face_local_to_spec(fp, w, h, d)
-        # Assign a default driver_id
+
+        # Unique driver_id based on current count
         driver_id = f"driver_{len(self._state.drivers)}"
 
-        # Build a stub DriverPlacement (no T/S parameters yet)
-        from beamsim2.driver.inductance import LR2Ladder
-        from beamsim2.driver.terminal import TerminalModel
-        from beamsim2.driver.thiele_small import TSParams
-
-        stub_ts = TSParams(
-            Mms=0.020,
-            Cms=1.2e-3,
-            Rms=1.0,
-            Re=6.0,
-            Bl=8.0,
-            Le=0.5e-3,
-        )
-        stub_terminal = TerminalModel(
-            ts=stub_ts, inductance_model=LR2Ladder(Le=0.5e-3, Le2=0.2e-3, Re2=3.0)
-        )
-        stub_dp = DriverPlacement(
+        # Build a fully valid DriverPlacement using the canonical default T/S factory
+        dp = DriverPlacement(
             spec=new_spec,
-            terminal=stub_terminal,
+            terminal=default_terminal_model(driver_id),
             driver_id=driver_id,
             face_placement=fp,
         )
-
-        # Open TSDialog pre-filled; on accept replace with confirmed placement
-        dlg = TSDialog(stub_dp, parent=self)
-        if dlg.exec():
-            result = dlg.placement
-            if result is not None:
-                # Preserve the face_placement through the dialog
-                result.face_placement = fp
-                # Re-derive spec from face_placement (TSDialog sets cx/cy/cz to face center)
-                result.spec = face_local_to_spec(fp, w, h, d)  # type: ignore[misc]
-                self._state.drivers.append(result)
-                self._refresh_canvas()
-                self.driversChanged.emit()
+        self._state.drivers.append(dp)
+        self._refresh_canvas()
+        self.driversChanged.emit()
 
     def _on_canvas_driver_deleted(self, idx: int) -> None:
         """User deleted a driver via context menu."""

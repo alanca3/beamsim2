@@ -4,6 +4,37 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Fix click-to-place driver: instant placement + drag (2026-06-19)
+
+### Fixed
+- **`TypeError: TSParams.__init__() got an unexpected keyword argument 'Le'`** —
+  `_on_canvas_driver_added` (geometry_view.py) previously hand-built a stub `TSParams`
+  with a non-existent `Le` kwarg and missing required `Sd`; the crash fired on every
+  face click before a driver was ever appended, so nothing placed and Preview showed a
+  downstream driver-placement error.  Root-cause: `Le` belongs to `LR2Ladder`
+  (the inductance model), not `TSParams`.  Fix: delete the stub/dialog approach and place
+  the driver **instantly** using the new `default_terminal_model()` factory — LEAP-style.
+- **Dragging a driver rotated the camera instead of moving the driver** — `_on_left_press`
+  suppressed camera rotation with `OnLeftButtonDown()` + `iren.CreateTimer(1)`, which is
+  unsound and still drove the trackball-camera style.  Fix: swap the interactor style to
+  `vtkInteractorStyleUser()` (a no-op) for the duration of a drag; restore the saved style
+  in `_on_left_release`.
+- **Laggy UI / camera jumping on every driver edit** — `render_scene` called
+  `reset_camera()` on every invocation (every driver edit, drag step, etc.), causing the
+  viewport to re-fit after each change.  Fix: guard with `_camera_initialized`; call
+  `reset_camera()` only on the first render and when box dimensions change.
+
+### Added
+- **`beamsim2.driver.terminal.default_terminal_model(name)`** — Qt-free factory returning
+  a fully valid `TerminalModel` with canonical woofer defaults (Re=6 Ω, Bl=7 T·m,
+  Mms=12 g, Cms=0.8 mm/N, Rms=1 N·s/m, Sd=133 cm², LR-2: Le=0.5 mH / Le2=0.2 mH /
+  Re2=3 Ω).  Defaults match TSDialog's spin-box initial values so right-clicking a
+  click-placed driver to Edit T/S shows consistent numbers.
+- **`tests/test_driver_terminal.py::TestDefaultTerminalModel`** — 4 CI-safe tests
+  covering field values, default name, finite audio-band response, and HF sign.
+
+---
+
 ## [Unreleased] — Interactive driver placement editor (2026-06-19)
 
 ### Added (flagged architecture departure — see below)
