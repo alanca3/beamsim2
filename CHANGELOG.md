@@ -4,6 +4,33 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Phase 2 kickoff: beamforming filter designer (2026-06-20)
+
+Start of **Phase 2** — the automatic beamforming filter designer that consumes the
+Phase-1 `H[M×F×N]` tensor and solves per-driver weights `w_m(f)` to steer/shape the beam.
+This entry is the kickoff (docs + package scaffolding); implementation lands stage-by-stage
+on `feature/phase2-filter-designer` (build order P2-0…P2-5).
+
+### Added
+- **`docs/Phase 2 - Filter Solver.md`** — the authoritative Phase-2 gameplan (DR-P2-01…06,
+  pipeline, filter/data contract, verified core math, GUI, validation V-tests, milestones,
+  risk register, build order), mirroring `BEAMSIMII_Gameplan.md`.
+- **`docs/Research Phase 2.md`** — the deep, adversarially-verified research report (synthesis
+  + full per-topic dossier) the gameplan distills.
+- **`src/beamsim2/beamform/`** — package scaffold (Qt-free): `covariance.py` (house-convention
+  look vector `c=conj(H_look)` and covariance `R=conj(H)·diag(a)·Hᵀ`, fully implemented) and
+  `weights.matched_field` (the max-WNG / delay-sum corner, implemented); `targets`, `weights`
+  (LS/MVDR/LCMV/Luo), `regularize` (WNG-floor), `forward`, `design`, `realize` are stubbed with
+  signatures + docstrings for their stages.
+
+### Notes
+- House sign convention pinned (DR-P2-02): the coded forward model is `P=Σ_m w_m·H_m`; the
+  microphone-array conjugate convention would silently mirror-steer. A round-trip steering test
+  is the arbiter (Stage P2-0a). Cardinal rule preserved — the beamformer never re-zeroes a driver.
+- **Known prerequisite (DR-P2-06):** the simulator's sphere grid currently tops out at Lebedev-26;
+  beam design/audit needs thousands of points → Stage P2-0b expands `core/sphere.py` to dense
+  Lebedev grids, and P2-0c implements the SH transform/resampling.
+
 ## [Unreleased] — Fix click-to-place driver: instant placement + drag (2026-06-19)
 
 ### Fixed
