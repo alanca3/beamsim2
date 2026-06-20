@@ -450,6 +450,10 @@ def _driver_attrs(dp: DriverPlacement) -> dict:
         "position": list(dp.spec.center),
         "orientation": list(dp.spec.normal),
         "radius": dp.spec.radius,
+        # diaphragm_area (m^2) — effective radiating area, used by the Phase-2 filter
+        # designer for sensitivity normalization (DATA_CONTRACT.md §3.5). Derived from the
+        # piston radius the BEM actually meshed.
+        "diaphragm_area": float(np.pi * dp.spec.radius**2),
         "profile": "flush_disk",
     }
     if dp.terminal is not None:
