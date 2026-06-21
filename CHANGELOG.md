@@ -4,6 +4,55 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-06-21 — Bug-Fix Chunk 1: data & solver correctness + logging foundation
+
+First chunk of the First-Run Bug-Fix campaign (`docs/Bug_Fix_Proposal.md`): fix the
+multi-driver persistence corruption (#7) and lay the logging foundation (#5). Diagnosed
+**spike-first** from the user's real `HDF5/Dr1.h5` — a 7-entry `driver_order` with a
+duplicated `driver_4` but a single surviving driver group.
+
+### Fixed
+- **Duplicate `driver_id` silently corrupted the dataset (#7).** Root cause: the GUI minted
+  ids as `f"driver_{len(drivers)}"`, which **reuses an index after a middle driver is
+  deleted** → two drivers share an id → `h5py` raises on the second `create_group` mid-write,
+  leaving a partial file whose `driver_order` is longer than its group set, which
+  `read_dataset` then "reads" by **duplicating the survivor and dropping the rest** (no error).
+  Reproduced exactly, then fixed in depth:
+  - `core/driver_ids.py` (new): `next_driver_id` (lowest free `driver_N`, never reuses one in
+    use) and `make_unique_id` (de-dups a user-typed id) replace the count-based scheme in
+    `gui/geometry_view.py` and `gui/parameters_panel.py` (add **and** edit paths).
+  - `validate_unique_driver_ids` is enforced at every contract boundary: `run_simulation`
+    (before the solve — fails in ms, not after a multi-hour run), `build_dataset`, and
+    `write_dataset` (**before** opening `"w"`, so a bad dataset never truncates a good file).
+  - `read_dataset` now **refuses** a corrupt file (`driver_order` vs group mismatch) with an
+    actionable message, while still reading a valid legacy file that predates the attr.
+
+### Added
+- **Reference / measurement axis metadata.** `SimulationRequest.reference_axis` (default `+z`)
+  is written as the `reference_axis` root attr; `core.sphere.nearest_direction_index` picks the
+  on-axis direction along it. The Results **On-axis** view now uses this instead of a hardcoded
+  `argmax(z)`, and the **Balloon** view draws a 0°/on-axis indicator. Additive-optional, so the
+  default path is byte-identical to before (`argmax(dot(uv,+z)) == argmax(uv[:,2])`).
+- **Logging foundation (#5).** `core/logging_setup.py`: `get_logger` (library code) +
+  `configure_logging(file, level)` (app/CLI/tests), with a `NullHandler` on the `beamsim2`
+  logger. Wired into `pipeline/run.py` (run summary, per-driver, non-convergence) and the
+  NumCalc adapter. The GUI Preferences toggle lands in Chunk 5.
+- **`tests/test_solver_correctness.py`** (CI-safe, no NumCalc): a synthetic two-monopole pair
+  sharing the global phase origin proves `driver_order` integrity + round-trip, duplicate-id
+  rejection (no partial file), corrupt/legacy read handling, `reference_axis` round-trip, and
+  low-freq near-omni directivity about the axis that **grows with frequency** (inter-driver
+  time-of-flight — V-5's concern). Plus the exact GUI delete-then-add id-collision scenario.
+
+### Notes
+- **`schema_version` stays `1.0`.** `reference_axis` is additive and optional (safe `+z`
+  default when absent), so no on-disk-format bump — which also avoids warning on every existing
+  1.0 file via `_check_schema_version`.
+- **Cardinal rule intact.** No change to phase origin or geometry; `tests/test_phase_origin.py`
+  (V-5), V-1, V-2, and the full suite stay green.
+- **Open question for the user (proposal §2):** whether the low-frequency directivity display
+  should switch to a far-field / acoustic-center-referenced convention (loudspeaker directivity
+  is conventionally far-field). That is locked-architecture-adjacent — **flagged, not changed.**
+
 ## [Unreleased] — Phase 2 kickoff: beamforming filter designer (2026-06-20)
 
 Start of **Phase 2** — the automatic beamforming filter designer that consumes the

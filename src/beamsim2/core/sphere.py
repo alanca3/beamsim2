@@ -30,6 +30,56 @@ from .types import ObservationPoints
 _TWO_PI = 2.0 * math.pi
 _FOUR_PI = 4.0 * math.pi
 
+# Default measurement / reference axis: +z.  A loudspeaker's "on-axis" response is
+# conventionally measured along the axis it faces; the dataset records this as
+# ``reference_axis`` (root attr) so views never hardcode +z.  Default keeps every
+# legacy file and the existing +z-facing test geometry byte-identical.
+DEFAULT_REFERENCE_AXIS = (0.0, 0.0, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# Reference-axis / on-axis direction selection
+# ---------------------------------------------------------------------------
+
+
+def nearest_direction_index(
+    unit_vectors: np.ndarray, axis: tuple[float, float, float] | np.ndarray
+) -> int:
+    """Index of the sampled direction closest to a reference axis.
+
+    "On-axis" is the direction whose unit vector has the largest projection
+    (dot product) onto the (normalised) reference ``axis``.  Used by the results
+    views to pick the on-axis response for a defined measurement axis instead of
+    hardcoding ``argmax(unit_vectors[:, 2])`` (which is only correct when the
+    axis happens to be +z).
+
+    Parameters
+    ----------
+    unit_vectors : np.ndarray
+        ``[N × 3]`` float — the sphere sampling directions (rows ~unit length).
+    axis : tuple of 3 float or np.ndarray
+        Reference axis in the same Cartesian frame.  Normalised internally;
+        a zero vector falls back to +z.
+
+    Returns
+    -------
+    int
+        Row index into ``unit_vectors`` of the on-axis direction.
+
+    Notes
+    -----
+    With ``axis = (0, 0, 1)`` this is exactly ``argmax(unit_vectors[:, 2])`` —
+    the prior hardcoded behaviour — so the default path is unchanged.
+    """
+    a = np.asarray(axis, dtype=np.float64).reshape(3)
+    norm = float(np.linalg.norm(a))
+    if norm == 0.0:
+        a = np.array(DEFAULT_REFERENCE_AXIS, dtype=np.float64)
+    else:
+        a = a / norm
+    projections = np.asarray(unit_vectors, dtype=np.float64) @ a  # [N]
+    return int(np.argmax(projections))
+
 
 # ---------------------------------------------------------------------------
 # Internal grid type (unit-sphere only; no radius)

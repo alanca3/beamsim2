@@ -358,6 +358,56 @@ def test_work_dirs_populated() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Reference-axis metadata production (Chunk 1) — the PRODUCER half
+# ---------------------------------------------------------------------------
+
+
+def test_reference_axis_default_written_to_dataset() -> None:
+    """Default request stores reference_axis = +z in the dataset root attrs."""
+    rng = np.random.default_rng(10)
+    backend = FakeBackend(rng, n_drivers=2)
+    result = run_simulation(_two_driver_request(), backend=backend)
+    assert result.dataset.attrs["reference_axis"] == [0.0, 0.0, 1.0]
+
+
+def test_reference_axis_custom_threads_through_pipeline() -> None:
+    """A non-default reference_axis on the request must reach the dataset attrs.
+
+    Guards the producer side: the results views read this attr, so if the
+    pipeline failed to write it they would silently revert to hardcoded +z.
+    """
+    rng = np.random.default_rng(11)
+    backend = FakeBackend(rng, n_drivers=2)
+    req = _two_driver_request()
+    req.reference_axis = (1.0, 0.0, 0.0)
+    result = run_simulation(req, backend=backend)
+    assert result.dataset.attrs["reference_axis"] == [1.0, 0.0, 0.0]
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-id validation fires BEFORE the (expensive) solve (Chunk 1)
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_driver_id_rejected_before_solve() -> None:
+    """run_simulation must reject a duplicate driver_id before touching the backend.
+
+    The whole point of the up-front guard is to fail in milliseconds, not after a
+    multi-hour solve — so assert prepare()/solve() were never reached.
+    """
+    import pytest
+
+    rng = np.random.default_rng(12)
+    backend = FakeBackend(rng, n_drivers=2)
+    req = _two_driver_request()
+    req.drivers[1].driver_id = req.drivers[0].driver_id  # force a collision
+    with pytest.raises(ValueError, match="unique"):
+        run_simulation(req, backend=backend)
+    assert backend.prepare_calls == [], "validation must precede backend.prepare()"
+    assert backend._call_count == 0, "validation must precede backend.solve()"
+
+
+# ---------------------------------------------------------------------------
 # Self-test smoke
 # ---------------------------------------------------------------------------
 

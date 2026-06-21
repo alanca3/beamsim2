@@ -194,6 +194,37 @@ def test_results_on_axis_view_loads(qapp):
     v.close()
 
 
+def test_results_views_honor_reference_axis(qapp):
+    """On-axis pick follows the dataset's reference_axis (default +z, settable +x)."""
+    import numpy as np
+
+    from beamsim2.core.sphere import nearest_direction_index
+    from beamsim2.gui.results_view import _BalloonView, _OnAxisView, _reference_axis
+
+    ds = _synthetic_dataset()
+    uvecs = ds.directions.unit_vectors
+
+    # Default (no attr): +z, identical to the old argmax(z) behaviour.
+    assert np.allclose(_reference_axis(ds), [0.0, 0.0, 1.0])
+    v = _OnAxisView()
+    v.load(ds)
+    assert v._last_on_axis_idx == int(np.argmax(uvecs[:, 2]))
+    v.close()
+
+    # Settable: +x reference axis must move the on-axis pick to the +x direction,
+    # and the balloon (with its axis indicator) must replot without raising.
+    ds.attrs["reference_axis"] = [1.0, 0.0, 0.0]
+    assert np.allclose(_reference_axis(ds), [1.0, 0.0, 0.0])
+    v2 = _OnAxisView()
+    v2.load(ds)
+    assert v2._last_on_axis_idx == nearest_direction_index(uvecs, (1.0, 0.0, 0.0))
+    assert v2._last_on_axis_idx != int(np.argmax(uvecs[:, 2]))
+    v2.close()
+    b = _BalloonView()
+    b.load(ds)  # exercises the reference-axis indicator draw path
+    b.close()
+
+
 def test_filter_designer_tab_loads_and_designs(qapp):
     """FilterDesignerTab loads a dataset, runs a design (inline), and replots without raising."""
     from beamsim2.beamform.design import design
