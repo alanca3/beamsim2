@@ -68,6 +68,24 @@ on `feature/phase2-filter-designer` (build order P2-0…P2-5).
   spherical-cap CBT holds a constant −6 dB beamwidth ≈ 0.64·(2θ₀) above cutoff (matching Keele)
   while the unshaded cap does not.
 
+### Stage P2-3 — GUI Filter-Designer tab + audit export (v1 usable end-to-end)
+- **`gui/filter_designer_view.py`**: a new top-level **"Filter Designer"** tab (5th) — pick a
+  pattern preset / cardioid-order / steering direction, an engine, and a robustness (WNG-floor)
+  slider; "Design" runs the solver on a background `QThread`; the achieved-vs-target H-plane
+  polar and directivity-vs-frequency are plotted; "Export audit…" writes the audit set. Reads
+  the in-memory dataset after a solve or an opened HDF5 file. Strict one-way core←gui dependency.
+- **`io/filter_export.py`**: `export_filter_design` — the DR-P2-03 audit-first export. Writes
+  filtered per-driver `.frd` (design weight baked in) and combined steered `.frd` on matched
+  H/V polar arcs (SH-resampled from the scattered solve grid), the raw weights (`.npz`,
+  re-loadable), a `manifest.csv`, and a `design.json` summary — openable in VituixCAD/REW.
+  `load_design_weights` reloads the weights to reconstruct the beam exactly.
+- Tests: `test_filter_export.py` (**V-EXPORT** — weights round-trip reconstructs the designed
+  beam to < 1e-12; `.frd`/arc structure) and two new `test_gui_smoke.py` cases (the tab loads a
+  dataset, designs inline, replots, and runs the constant-DI engine end-to-end).
+- **v1 of the Phase-2 filter designer is now usable end-to-end** (design → view → audit export).
+  Deployable FIR/biquad coefficient export remains Stage P2-5 (deferred until a target DSP is
+  chosen). MECD and GRPQ generalized-crossovers also remain follow-ups.
+
 ## [Unreleased] — Fix click-to-place driver: instant placement + drag (2026-06-19)
 
 ### Fixed

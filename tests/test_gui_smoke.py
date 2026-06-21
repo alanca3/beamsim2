@@ -148,8 +148,8 @@ def test_main_window_constructs(qapp):
     win.close()
 
 
-def test_main_window_has_four_tabs(qapp):
-    """MainWindow must expose exactly 4 tabs."""
+def test_main_window_has_five_tabs(qapp):
+    """MainWindow must expose exactly 5 tabs (incl. the Phase-2 Filter Designer)."""
     from PySide6.QtWidgets import QTabWidget
 
     from beamsim2.gui.app import MainWindow
@@ -157,9 +157,9 @@ def test_main_window_has_four_tabs(qapp):
     win = MainWindow()
     tabs = win.findChild(QTabWidget)
     assert tabs is not None
-    assert tabs.count() == 4
-    labels = [tabs.tabText(i) for i in range(4)]
-    assert labels == ["Geometry", "Drivers", "Simulation", "Results"]
+    assert tabs.count() == 5
+    labels = [tabs.tabText(i) for i in range(5)]
+    assert labels == ["Geometry", "Drivers", "Simulation", "Results", "Filter Designer"]
     win.close()
 
 
@@ -192,6 +192,47 @@ def test_results_on_axis_view_loads(qapp):
     assert v._ds is ds
     assert v._drv_combo.count() == 2
     v.close()
+
+
+def test_filter_designer_tab_loads_and_designs(qapp):
+    """FilterDesignerTab loads a dataset, runs a design (inline), and replots without raising."""
+    from beamsim2.beamform.design import design
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import FilterDesignerTab
+
+    state = AppState()
+    tab = FilterDesignerTab(state)
+    ds = _synthetic_dataset()
+    tab.load(ds)  # must not raise
+    assert tab._ds is ds
+    assert tab._freq_combo.count() == F
+    assert tab._design_btn.isEnabled()
+    assert not tab._export_btn.isEnabled()
+
+    # Run the solver inline (avoid the worker thread) and feed the result back to the tab.
+    spec = tab._build_spec()
+    result = design(ds, spec)
+    tab._on_design_done(result)  # exercises metrics text + both plots
+    assert tab._result is result
+    assert tab._export_btn.isEnabled()
+    assert "Engine" in tab._metrics.text()
+    tab.close()
+
+
+def test_filter_designer_constant_di_engine(qapp):
+    """The constant-DI engine path runs end-to-end through the tab's spec builder."""
+    from beamsim2.beamform.design import design
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import _ENGINES, FilterDesignerTab
+
+    state = AppState()
+    tab = FilterDesignerTab(state)
+    tab.load(_synthetic_dataset())
+    tab._engine.setCurrentIndex([e for _, e in _ENGINES].index("constant_di"))
+    result = design(tab._ds, tab._build_spec())
+    tab._on_design_done(result)
+    assert "constant_gdi_db" in result.attrs
+    tab.close()
 
 
 def test_results_balloon_view_loads(qapp):
@@ -347,6 +388,7 @@ def test_app_state_defaults():
 def test_all_gui_modules_importable():
     """All gui/ modules must import without exception."""
     import beamsim2.gui.app  # noqa: F401
+    import beamsim2.gui.filter_designer_view  # noqa: F401
     import beamsim2.gui.geometry_view  # noqa: F401
     import beamsim2.gui.parameters_panel  # noqa: F401
     import beamsim2.gui.results_view  # noqa: F401
