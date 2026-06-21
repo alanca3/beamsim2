@@ -34,6 +34,7 @@ from beamsim2.backends.base import BEMBackend
 from beamsim2.backends.numcalc.config import resolve_numcalc_binary
 from beamsim2.backends.numcalc.ncinp_writer import write_mesh_files, write_nc_inp
 from beamsim2.backends.numcalc.reader import read_eval_pressure
+from beamsim2.core.logging_setup import get_logger
 from beamsim2.core.types import (
     BoundaryConditions,
     ComplexField,
@@ -47,6 +48,8 @@ from beamsim2.core.types import (
 )
 
 _META_FILENAME = "beamsim2_meta.json"
+
+logger = get_logger(__name__)
 
 
 class NumCalcBackend(BEMBackend):
@@ -217,6 +220,7 @@ class NumCalcBackend(BEMBackend):
 
         n_freq = len(spec.frequency_grid.frequencies)
         work_dir = spec.work_dir
+        logger.debug("NumCalc solve: %d frequency step(s) in %s", n_freq, work_dir)
 
         # Get RAM estimates so the scheduler can pack against the 42 GB budget.
         # Run -estimate_ram against the already-prepared NC.inp. NaN-tolerant:

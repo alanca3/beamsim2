@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from beamsim2.core.driver_ids import validate_unique_driver_ids
 from beamsim2.core.types import ComplexField, ObservationPoints
 
 
@@ -138,6 +139,11 @@ def build_dataset(
     """
     if len(driver_inputs) == 0:
         raise ValueError("build_dataset: need at least one driver")
+
+    # Contract guard: every driver becomes a uniquely-named HDF5 group, and
+    # driver_order indexes the Phase-2 steering matrix.  A duplicate id would
+    # silently overwrite/drop a driver, so refuse to assemble one.
+    validate_unique_driver_ids([driver_id for driver_id, _f, _a in driver_inputs])
 
     # reference shape from first driver
     first_field = driver_inputs[0][1]

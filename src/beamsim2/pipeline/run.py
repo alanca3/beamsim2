@@ -38,7 +38,9 @@ import numpy as np
 
 from beamsim2.assembly.tensor import RadiationDataset, build_dataset
 from beamsim2.backends.base import BEMBackend
-from beamsim2.core.sphere import make_observation_grid
+from beamsim2.core.driver_ids import validate_unique_driver_ids
+from beamsim2.core.logging_setup import get_logger
+from beamsim2.core.sphere import DEFAULT_REFERENCE_AXIS, make_observation_grid
 from beamsim2.core.types import (
     BoundaryConditions,
     ComplexField,
@@ -54,6 +56,8 @@ from beamsim2.geometry.mesh import mesh_geometry
 
 if TYPE_CHECKING:
     from beamsim2.pipeline.progress import ProgressModel
+
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +135,13 @@ class SimulationRequest:
         used (see ``core.sphere.make_observation_grid``).
     sphere_radius : float
         Observation sphere radius in metres.
+    reference_axis : tuple[float, float, float]
+        Measurement / on-axis reference direction in the global Cartesian frame.
+        Default ``(0, 0, 1)`` (+z).  Stored as the ``reference_axis`` root attr.
+        The Results **On-axis** and **Balloon** views pick the on-axis response
+        along it instead of hardcoding +z; the polar and directivity-map views are
+        still +z-referenced (deferred to Chunk 2).  Display-only: does NOT move the
+        phase origin (cardinal rule) or change any solve.
     config : SolverConfig
         Solver and medium parameters (n_epw, c, rho, …).
     output_h5 : str or Path or None
@@ -147,6 +158,7 @@ class SimulationRequest:
     sphere_scheme: str = "lebedev"
     sphere_n_points: int = 26
     sphere_radius: float = 1.0
+    reference_axis: tuple[float, float, float] = DEFAULT_REFERENCE_AXIS
     config: SolverConfig = field(default_factory=SolverConfig)
     output_h5: Optional[str | Path] = None
     export_frd_dir: Optional[str | Path] = None
@@ -293,6 +305,23 @@ def run_simulation(
     M = len(req.drivers)
     f_max = float(req.frequencies.frequencies.max())
 
+    # Validate driver ids BEFORE the (potentially multi-hour) solve: a duplicate
+    # or blank id would only surface at write time, after all the compute. Fail
+    # in milliseconds with a message the GUI can show verbatim.
+    validate_unique_driver_ids([dp.driver_id for dp in req.drivers])
+
+    logger.info(
+        "run_simulation: %d driver(s), %d frequencies (%.0f–%.0f Hz), "
+        "sphere=%s n=%d, backend=%s",
+        M,
+        len(req.frequencies.frequencies),
+        float(req.frequencies.frequencies.min()),
+        f_max,
+        req.sphere_scheme,
+        req.sphere_n_points,
+        type(backend).__name__,
+    )
+
     # ── Stage A/B/C: geometry + health check + mesh ─────────────────────────
     # Mesh is built ONCE and shared across all M per-driver solves.  This is the
     # foundation of the single-phase-origin rule: all M solves reference the
@@ -325,6 +354,8 @@ def run_simulation(
         group_tag = m + 1  # assemble_box_driver assigns tags 1..M, M+1=shell
         bc_m = BoundaryConditions(vibrating_groups={group_tag: complex(1.0, 0.0)})
 
+        logger.info("solving driver %d/%d: %s", m + 1, M, dp.driver_id)
+
         if progress is not None:
             progress.driver_started(dp.driver_id, m, M)
 
@@ -341,6 +372,14 @@ def run_simulation(
 
         # ~field.convergence_flags: True = non-converged (i.e. flagged)
         flagged[dp.driver_id] = ~field.convergence_flags  # [F] bool
+        n_flagged = int(np.sum(flagged[dp.driver_id]))
+        if n_flagged:
+            logger.warning(
+                "driver %s: %d/%d frequency step(s) did not converge",
+                dp.driver_id,
+                n_flagged,
+                len(req.frequencies.frequencies),
+            )
 
         if progress is not None:
             progress.driver_finished(dp.driver_id, m, flagged[dp.driver_id])
@@ -388,6 +427,14 @@ def run_simulation(
         from beamsim2.io.sofa_export import write_sofa
 
         write_sofa(req.export_sofa_path, dataset)
+
+    total_flagged = sum(int(np.sum(f)) for f in flagged.values())
+    logger.info(
+        "run_simulation complete: %d driver(s) assembled, %d non-converged step(s)%s",
+        M,
+        total_flagged,
+        f", HDF5 → {h5_path}" if h5_path is not None else "",
+    )
 
     return SimulationResult(
         dataset=dataset,
@@ -476,6 +523,7 @@ def _root_attrs(req: SimulationRequest, flagged: dict[str, np.ndarray]) -> dict:
         "solver_backend": "numcalc",
         "phase_origin": [0.0, 0.0, 0.0],
         "axis_convention": "right-hand xyz",
+        "reference_axis": [float(c) for c in req.reference_axis],
         "length_units": "metres",
         "observation_radius": req.sphere_radius,
         "far_field": False,

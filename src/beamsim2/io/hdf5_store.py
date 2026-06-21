@@ -42,6 +42,7 @@ import h5py
 import numpy as np
 
 from beamsim2.assembly.tensor import DriverData, RadiationDataset
+from beamsim2.core.driver_ids import validate_unique_driver_ids
 from beamsim2.core.types import ObservationPoints
 
 SCHEMA_VERSION = "1.0"
@@ -156,6 +157,11 @@ def write_dataset(path: str | Path, ds: RadiationDataset) -> None:
     except importlib.metadata.PackageNotFoundError:
         bsim_version = "unknown"
 
+    # Validate BEFORE opening "w" (which truncates): a duplicate driver_id would
+    # crash mid-write at the second create_group, leaving a corrupt partial file
+    # (driver_order longer than the group set). Fail loud without touching disk.
+    validate_unique_driver_ids([d.driver_id for d in ds.drivers])
+
     path = Path(path)
     with h5py.File(path, "w") as f:
         # ── root datasets ──────────────────────────────────────────────────
@@ -256,12 +262,39 @@ def read_dataset(path: str | Path) -> RadiationDataset:
         # HDF5 group key iteration is alphabetical, not insertion-order;
         # without this, stacked_h_full row indices would be silently permuted.
         drv_grp = f["drivers"]
+        group_ids = list(drv_grp.keys())
         raw_order = root_attrs.pop("driver_order", None)
-        if raw_order is not None and isinstance(raw_order, list):
-            ordered_ids = raw_order
+        if raw_order is None:
+            # Genuinely old file written before the driver_order attr existed:
+            # group keys are unique, so alphabetical order is a safe fallback.
+            ordered_ids = sorted(group_ids)
+        elif not isinstance(raw_order, list):
+            # The attr is PRESENT but unreadable (not a JSON list) — this is not a
+            # legacy file, so silently re-sorting would risk mis-mapping drivers.
+            raise ValueError(
+                f"{path.name}: corrupt dataset — driver_order attribute is present "
+                f"but is not a list ({type(raw_order).__name__}). Re-run the solve "
+                "to regenerate it."
+            )
         else:
-            # fallback for files written before driver_order attr existed
-            ordered_ids = sorted(drv_grp.keys())
+            # Guard against corrupt files (e.g. a duplicate driver_id crashed an
+            # earlier write mid-stream, leaving driver_order longer than the
+            # surviving group set). Refuse to silently duplicate/drop drivers.
+            if len(set(raw_order)) != len(raw_order):
+                dups = sorted({x for x in raw_order if raw_order.count(x) > 1})
+                raise ValueError(
+                    f"{path.name}: corrupt dataset — driver_order has duplicate "
+                    f"id(s) {dups}. This file was written from a driver set with "
+                    "colliding ids; re-run the solve to regenerate it."
+                )
+            if set(raw_order) != set(group_ids):
+                raise ValueError(
+                    f"{path.name}: corrupt dataset — driver_order lists "
+                    f"{len(raw_order)} driver(s) {sorted(raw_order)} but the file "
+                    f"contains {len(group_ids)} group(s) {sorted(group_ids)}. "
+                    "Re-run the solve to regenerate it."
+                )
+            ordered_ids = raw_order
 
         drivers: list[DriverData] = []
         for driver_id in ordered_ids:

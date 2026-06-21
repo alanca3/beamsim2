@@ -33,6 +33,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
 from beamsim2.assembly.tensor import RadiationDataset
+from beamsim2.core.sphere import DEFAULT_REFERENCE_AXIS, nearest_direction_index
 
 _P_REF = 20e-6  # Pa — reference SPL
 
@@ -40,6 +41,17 @@ _P_REF = 20e-6  # Pa — reference SPL
 def _db(pressure: np.ndarray) -> np.ndarray:
     """Magnitude in dB SPL re 20 µPa."""
     return 20.0 * np.log10(np.abs(pressure) / _P_REF + 1e-300)
+
+
+def _reference_axis(ds: RadiationDataset) -> np.ndarray:
+    """Return the dataset's measurement/reference axis (default +z).
+
+    Reads the ``reference_axis`` root attr written by the pipeline; falls back to
+    +z for legacy files that predate it.  Used so the on-axis/balloon views pick
+    the loudspeaker front instead of hardcoding +z.
+    """
+    axis = ds.attrs.get("reference_axis", DEFAULT_REFERENCE_AXIS)
+    return np.asarray(axis, dtype=np.float64).reshape(3)
 
 
 class _MplCanvas(QWidget):
@@ -132,9 +144,11 @@ class _OnAxisView(QWidget):
         freqs = self._ds.frequencies  # [F]
         conv = drv.convergence_flags  # [F] bool
 
-        # On-axis: pick direction nearest +z (unit_vector[2] is maximum)
+        # On-axis: pick the direction nearest the dataset's reference axis
+        # (default +z, but settable to the loudspeaker front) — never hardcode +z.
         uvecs = self._ds.directions.unit_vectors  # [N, 3]
-        on_ax_idx = int(np.argmax(uvecs[:, 2]))
+        on_ax_idx = nearest_direction_index(uvecs, _reference_axis(self._ds))
+        self._last_on_axis_idx = on_ax_idx  # exposed for tests / debugging
         h_onaxis = H[:, on_ax_idx]  # [F] complex128
 
         self._ax_mag.cla()
@@ -337,6 +351,15 @@ class _BalloonView(QWidget):
             self._cbar = self._canvas.fig.colorbar(sc, ax=ax, shrink=0.6, label="dB SPL")
         else:
             self._cbar.update_normal(sc)
+
+        # Reference-axis (0°/on-axis) indicator: a dashed line from the origin
+        # along the dataset's measurement axis, so "on-axis" is unambiguous.
+        axis = _reference_axis(self._ds)
+        norm = float(np.linalg.norm(axis))
+        if norm > 0:
+            a = axis / norm * 1.15
+            ax.plot([0, a[0]], [0, a[1]], [0, a[2]], "k--", linewidth=1.5)
+            ax.text(a[0], a[1], a[2], "  0° axis", fontsize=8)
 
         ax.set_xlabel("x")
         ax.set_ylabel("y")

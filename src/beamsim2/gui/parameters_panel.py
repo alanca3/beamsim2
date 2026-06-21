@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from beamsim2.core.driver_ids import make_unique_id, next_driver_id
 from beamsim2.core.types import FrequencyGrid
 from beamsim2.driver.inductance import LR2Ladder, PlainLe
 from beamsim2.driver.terminal import TerminalModel
@@ -356,10 +357,15 @@ class DriversTab(QWidget):
 
     def _add_driver(self) -> None:
         dlg = TSDialog(parent=self)
-        # Pre-number the new driver
-        dlg._id_edit.setText(f"driver_{len(self._state.drivers)}")
+        # Pre-number the new driver with the lowest free id (never reuses one in use).
+        existing = [dp.driver_id for dp in self._state.drivers]
+        dlg._id_edit.setText(next_driver_id(existing))
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.placement:
-            self._state.drivers.append(dlg.placement)
+            result = dlg.placement
+            # Guard against a user-typed duplicate id ever entering state — a
+            # collision would silently overwrite/drop a driver on HDF5 write.
+            result.driver_id = make_unique_id(result.driver_id, existing)
+            self._state.drivers.append(result)
             self._rebuild_rows()
             self.driversChanged.emit()
 
@@ -370,6 +376,9 @@ class DriversTab(QWidget):
             result = dlg.placement
             # Preserve face_placement from original (TSDialog edits T/S, not placement)
             result.face_placement = dp.face_placement  # type: ignore[misc]
+            # Enforce uniqueness against the OTHER drivers (exclude the one edited).
+            others = [d.driver_id for j, d in enumerate(self._state.drivers) if j != index]
+            result.driver_id = make_unique_id(result.driver_id, others)
             self._state.drivers[index] = result
             self._rebuild_rows()
             self.driversChanged.emit()

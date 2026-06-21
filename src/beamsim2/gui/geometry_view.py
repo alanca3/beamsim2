@@ -757,8 +757,11 @@ class GeometryTab(QWidget):
         w, h, d = self._w.value(), self._h.value(), self._d.value()
         new_spec = face_local_to_spec(fp, w, h, d)
 
-        # Unique driver_id based on current count
-        driver_id = f"driver_{len(self._state.drivers)}"
+        # Unique driver_id: lowest free "driver_N" — never reuses an id still in
+        # use (a count-based scheme collides after a middle driver is deleted).
+        from beamsim2.core.driver_ids import next_driver_id
+
+        driver_id = next_driver_id(dp.driver_id for dp in self._state.drivers)
 
         # Build a fully valid DriverPlacement using the canonical default T/S factory
         dp = DriverPlacement(
