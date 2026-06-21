@@ -364,6 +364,69 @@ def test_solve_worker_emits_finished(qapp):
     assert isinstance(results_received[0], SimulationResult)
 
 
+def _drive_until_stopped(qapp, thread, timeout_s=10.0):
+    """Pump the Qt event loop until a worker thread quits (deliver queued signals)."""
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while thread.isRunning() and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+    qapp.processEvents()
+
+
+def test_design_worker_emits_finished_on_thread(qapp):
+    """DesignWorker must emit 'finished' with a DesignResult when run on a real QThread.
+
+    Closes the P2-3 gate 'design ... through the GUI worker' — the smoke tests above call
+    the slot inline, so this is the only coverage of moveToThread + signal wiring + quit().
+    """
+    from beamsim2.beamform.design import DesignResult
+    from beamsim2.beamform.targets import TargetSpec
+    from beamsim2.gui.filter_designer_view import DesignWorker
+
+    finished, failed = [], []
+    thread = QThread()
+    worker = DesignWorker(_synthetic_dataset(), TargetSpec(engine="ls"))
+    worker.moveToThread(thread)
+    thread.started.connect(worker.run)
+    worker.finished.connect(finished.append)
+    worker.failed.connect(failed.append)
+    worker.finished.connect(thread.quit)
+    worker.failed.connect(thread.quit)
+
+    thread.start()
+    _drive_until_stopped(qapp, thread)
+
+    assert not thread.isRunning(), "worker thread did not quit after finishing"
+    assert not failed, f"DesignWorker.failed emitted: {failed[:1]}"
+    assert len(finished) == 1
+    assert isinstance(finished[0], DesignResult)
+
+
+def test_design_worker_emits_failed_on_bad_spec(qapp):
+    """A bad spec makes design() raise; DesignWorker must surface it via 'failed' (not crash)."""
+    from beamsim2.beamform.targets import TargetSpec
+    from beamsim2.gui.filter_designer_view import DesignWorker
+
+    finished, failed = [], []
+    thread = QThread()
+    worker = DesignWorker(_synthetic_dataset(), TargetSpec(engine="does_not_exist"))
+    worker.moveToThread(thread)
+    thread.started.connect(worker.run)
+    worker.finished.connect(finished.append)
+    worker.failed.connect(failed.append)
+    worker.finished.connect(thread.quit)
+    worker.failed.connect(thread.quit)
+
+    thread.start()
+    _drive_until_stopped(qapp, thread)
+
+    assert not thread.isRunning()
+    assert not finished
+    assert len(failed) == 1 and "does_not_exist" in failed[0]
+
+
 # ---------------------------------------------------------------------------
 # Test 4: AppState dataclass
 # ---------------------------------------------------------------------------
