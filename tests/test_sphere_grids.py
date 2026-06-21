@@ -253,6 +253,8 @@ def test_t_design_raises():
         t_design(5)
 
 
-def test_icosphere_raises():
-    with pytest.raises(NotImplementedError):
-        icosphere(2)
+def test_icosphere_implemented():
+    """Icosphere is implemented (Stage P2-0b); detailed coverage in test_sphere_dense.py."""
+    obs = icosphere(2)
+    assert obs.unit_vectors.shape == (162, 3)
+    assert obs.weights.sum() == pytest.approx(4.0 * np.pi, rel=1e-12)

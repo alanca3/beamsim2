@@ -6,8 +6,11 @@ In loudspeaker terms: you can compute radiated power, directivity index, and
 Phase-2 covariance matrices as simple weighted sums Σ wᵢ f(directionᵢ) with no
 ad-hoc angular-density correction.
 
-Three alternative schemes (Fliege–Maier, t-design, icosphere) are reserved for
-future implementation; they raise NotImplementedError to prevent silent wrong results.
+The near-uniform **icosphere** grid (geodesic subdivision) is also implemented for the
+hundreds-to-thousands of directions Phase-2 beam design/audit needs; it carries
+spherical-area quadrature weights (sum = 4π) rather than exact polynomial weights. The
+remaining alternatives (Fliege–Maier, t-design) raise NotImplementedError to prevent
+silent wrong results. ``make_observation_grid`` dispatches by scheme name.
 
 References
 ----------
@@ -336,19 +339,193 @@ def t_design(degree: int, *, radius: float = 1.0) -> ObservationPoints:
     raise NotImplementedError("Spherical t-designs are not yet implemented. Use lebedev() instead.")
 
 
+# ---------------------------------------------------------------------------
+# Icosphere (geodesic) grid — algorithmic, scales to thousands of points
+#
+# Built by recursively subdividing a unit icosahedron and projecting new
+# vertices to the sphere.  Unlike Lebedev it has no closed-form polynomial-exact
+# quadrature weights, but it is *near-uniform* (avoiding the lat/long pole
+# clustering the data contract warns against) and is generated entirely in code
+# (no vendored tables).  Vertex quadrature weights are the spherical-triangle
+# areas of the surrounding faces (Girard's theorem), distributed 1/3 to each
+# vertex, so they sum to exactly 4π — a first-order quadrature whose accuracy
+# improves with point count.  This is the Phase-2 "Balloon" grid: it supplies the
+# hundreds-to-thousands of directions beam design and audit need.
+#
+# Point count after s subdivisions: N = 10·4^s + 2
+#   s=0:12  s=1:42  s=2:162  s=3:642  s=4:2562  s=5:10242  s=6:40962
+# ---------------------------------------------------------------------------
+
+# Canonical unit-icosahedron vertices (golden-ratio construction) and the 20
+# triangular faces (consistent outward winding).
+_PHI = (1.0 + math.sqrt(5.0)) / 2.0
+_ICOSA_VERTS = np.array(
+    [
+        [-1.0, _PHI, 0.0],
+        [1.0, _PHI, 0.0],
+        [-1.0, -_PHI, 0.0],
+        [1.0, -_PHI, 0.0],
+        [0.0, -1.0, _PHI],
+        [0.0, 1.0, _PHI],
+        [0.0, -1.0, -_PHI],
+        [0.0, 1.0, -_PHI],
+        [_PHI, 0.0, -1.0],
+        [_PHI, 0.0, 1.0],
+        [-_PHI, 0.0, -1.0],
+        [-_PHI, 0.0, 1.0],
+    ],
+    dtype=np.float64,
+)
+_ICOSA_FACES = np.array(
+    [
+        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+    ],
+    dtype=np.int64,
+)  # fmt: skip
+
+
+def _subdivide_icosphere(subdivisions: int) -> tuple[np.ndarray, np.ndarray]:
+    """Subdivide the unit icosahedron ``subdivisions`` times.
+
+    Returns
+    -------
+    verts : np.ndarray
+        ``[V, 3]`` float64 unit vectors (projected to the sphere).
+    faces : np.ndarray
+        ``[T, 3]`` int64 triangle vertex indices.
+    """
+    verts: list[np.ndarray] = [v / np.linalg.norm(v) for v in _ICOSA_VERTS]
+    faces = _ICOSA_FACES.tolist()
+    midpoint_cache: dict[tuple[int, int], int] = {}
+
+    def _midpoint(i: int, j: int) -> int:
+        key = (i, j) if i < j else (j, i)
+        cached = midpoint_cache.get(key)
+        if cached is not None:
+            return cached
+        m = verts[i] + verts[j]
+        m /= np.linalg.norm(m)  # project to the unit sphere
+        idx = len(verts)
+        verts.append(m)
+        midpoint_cache[key] = idx
+        return idx
+
+    for _ in range(subdivisions):
+        new_faces: list[list[int]] = []
+        for a, b, c in faces:
+            ab = _midpoint(a, b)
+            bc = _midpoint(b, c)
+            ca = _midpoint(c, a)
+            new_faces.extend([[a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]])
+        faces = new_faces
+
+    return np.array(verts, dtype=np.float64), np.array(faces, dtype=np.int64)
+
+
+def _spherical_triangle_areas(verts: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """Spherical excess (area, steradians) of each triangle (Van Oosterom–Strackee).
+
+    ``tan(E/2) = |a·(b×c)| / (1 + a·b + b·c + c·a)``; the excesses sum to 4π.
+    """
+    a = verts[faces[:, 0]]  # [T,3]
+    b = verts[faces[:, 1]]
+    c = verts[faces[:, 2]]
+    triple = np.abs(np.einsum("ij,ij->i", a, np.cross(b, c)))  # [T]
+    denom = (
+        1.0
+        + np.einsum("ij,ij->i", a, b)
+        + np.einsum("ij,ij->i", b, c)
+        + np.einsum("ij,ij->i", c, a)
+    )
+    return 2.0 * np.arctan2(triple, denom)  # [T] steradians
+
+
+def _icosphere_grid(subdivisions: int) -> _SphereGrid:
+    """Build a near-uniform icosphere grid with area-based vertex weights."""
+    verts, faces = _subdivide_icosphere(subdivisions)  # [V,3], [T,3]
+    areas = _spherical_triangle_areas(verts, faces)  # [T]
+    # Distribute each triangle's area equally to its three vertices -> sum == 4π.
+    weights = np.zeros(verts.shape[0], dtype=np.float64)
+    np.add.at(weights, faces[:, 0], areas / 3.0)
+    np.add.at(weights, faces[:, 1], areas / 3.0)
+    np.add.at(weights, faces[:, 2], areas / 3.0)
+    return _SphereGrid(
+        unit_vectors=verts,
+        weights=weights,
+        theta_phi=_cartesian_to_theta_phi(verts),
+        scheme="icosphere",
+        order=subdivisions,
+        weight_convention="sum_4pi",
+    )
+
+
 def icosphere(subdivisions: int, *, radius: float = 1.0) -> ObservationPoints:
-    """Icosphere grid (no exact quadrature weights, not yet implemented).
+    """Near-uniform geodesic (icosphere) grid scaling to thousands of points.
+
+    The Phase-2 "Balloon" grid for beam design / audit. Generated entirely in code
+    (no vendored tables) by subdividing a unit icosahedron; vertex weights are the
+    spherical-triangle areas of the surrounding faces (sum = 4π). Weights are a
+    first-order quadrature (not polynomial-exact like Lebedev) whose accuracy
+    improves with point count — adequate for covariance/DI integrals at the
+    hundreds-to-thousands point counts used here.
 
     Parameters
     ----------
     subdivisions : int
-        Number of icosahedron subdivision levels (controls point count).
+        Number of icosahedron subdivision levels (>= 0). Point count
+        ``N = 10 * 4**subdivisions + 2`` (s=3 -> 642, s=4 -> 2562, s=5 -> 10242).
     radius : float
         Observation sphere radius in metres.
 
+    Returns
+    -------
+    ObservationPoints
+        With ``sum(weights) == 4π`` and ``scheme == "icosphere"``.
+
     Raises
     ------
-    NotImplementedError
-        Always; use ``lebedev()`` instead.
+    ValueError
+        If ``subdivisions`` is negative.
     """
-    raise NotImplementedError("Icosphere grids are not yet implemented. Use lebedev() instead.")
+    if subdivisions < 0:
+        raise ValueError(f"subdivisions must be >= 0, got {subdivisions}.")
+    return _icosphere_grid(subdivisions).to_observation_points(radius)
+
+
+def make_observation_grid(scheme: str, n_points: int, *, radius: float = 1.0) -> ObservationPoints:
+    """Build an observation grid by scheme name, ``n_points`` interpreted as a target.
+
+    The single entry point the pipeline/GUI use so a request can ask for an exact
+    Lebedev order or a near-uniform icosphere with *at least* ``n_points`` directions.
+
+    Parameters
+    ----------
+    scheme : str
+        ``"lebedev"`` (exact quadrature, orders {6, 14, 26}) or ``"icosphere"``
+        (near-uniform, thousands of points; the Phase-2 "Balloon" grid).
+    n_points : int
+        For ``"lebedev"``: the exact order (must be implemented). For ``"icosphere"``:
+        a target count — the smallest subdivision with ``>= n_points`` is chosen.
+    radius : float
+        Observation sphere radius in metres.
+
+    Returns
+    -------
+    ObservationPoints
+
+    Raises
+    ------
+    ValueError
+        If ``scheme`` is unknown.
+    """
+    if scheme == "lebedev":
+        return lebedev(n_points, radius=radius)
+    if scheme == "icosphere":
+        subdivisions = 0
+        while 10 * 4**subdivisions + 2 < n_points:
+            subdivisions += 1
+        return icosphere(subdivisions, radius=radius)
+    raise ValueError(f"Unknown sphere scheme {scheme!r}. Use 'lebedev' or 'icosphere'.")

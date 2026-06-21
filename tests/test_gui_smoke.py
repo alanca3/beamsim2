@@ -148,8 +148,8 @@ def test_main_window_constructs(qapp):
     win.close()
 
 
-def test_main_window_has_four_tabs(qapp):
-    """MainWindow must expose exactly 4 tabs."""
+def test_main_window_has_five_tabs(qapp):
+    """MainWindow must expose exactly 5 tabs (incl. the Phase-2 Filter Designer)."""
     from PySide6.QtWidgets import QTabWidget
 
     from beamsim2.gui.app import MainWindow
@@ -157,9 +157,9 @@ def test_main_window_has_four_tabs(qapp):
     win = MainWindow()
     tabs = win.findChild(QTabWidget)
     assert tabs is not None
-    assert tabs.count() == 4
-    labels = [tabs.tabText(i) for i in range(4)]
-    assert labels == ["Geometry", "Drivers", "Simulation", "Results"]
+    assert tabs.count() == 5
+    labels = [tabs.tabText(i) for i in range(5)]
+    assert labels == ["Geometry", "Drivers", "Simulation", "Results", "Filter Designer"]
     win.close()
 
 
@@ -192,6 +192,47 @@ def test_results_on_axis_view_loads(qapp):
     assert v._ds is ds
     assert v._drv_combo.count() == 2
     v.close()
+
+
+def test_filter_designer_tab_loads_and_designs(qapp):
+    """FilterDesignerTab loads a dataset, runs a design (inline), and replots without raising."""
+    from beamsim2.beamform.design import design
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import FilterDesignerTab
+
+    state = AppState()
+    tab = FilterDesignerTab(state)
+    ds = _synthetic_dataset()
+    tab.load(ds)  # must not raise
+    assert tab._ds is ds
+    assert tab._freq_combo.count() == F
+    assert tab._design_btn.isEnabled()
+    assert not tab._export_btn.isEnabled()
+
+    # Run the solver inline (avoid the worker thread) and feed the result back to the tab.
+    spec = tab._build_spec()
+    result = design(ds, spec)
+    tab._on_design_done(result)  # exercises metrics text + both plots
+    assert tab._result is result
+    assert tab._export_btn.isEnabled()
+    assert "Engine" in tab._metrics.text()
+    tab.close()
+
+
+def test_filter_designer_constant_di_engine(qapp):
+    """The constant-DI engine path runs end-to-end through the tab's spec builder."""
+    from beamsim2.beamform.design import design
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import _ENGINES, FilterDesignerTab
+
+    state = AppState()
+    tab = FilterDesignerTab(state)
+    tab.load(_synthetic_dataset())
+    tab._engine.setCurrentIndex([e for _, e in _ENGINES].index("constant_di"))
+    result = design(tab._ds, tab._build_spec())
+    tab._on_design_done(result)
+    assert "constant_gdi_db" in result.attrs
+    tab.close()
 
 
 def test_results_balloon_view_loads(qapp):
@@ -323,6 +364,69 @@ def test_solve_worker_emits_finished(qapp):
     assert isinstance(results_received[0], SimulationResult)
 
 
+def _drive_until_stopped(qapp, thread, timeout_s=10.0):
+    """Pump the Qt event loop until a worker thread quits (deliver queued signals)."""
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while thread.isRunning() and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+    qapp.processEvents()
+
+
+def test_design_worker_emits_finished_on_thread(qapp):
+    """DesignWorker must emit 'finished' with a DesignResult when run on a real QThread.
+
+    Closes the P2-3 gate 'design ... through the GUI worker' — the smoke tests above call
+    the slot inline, so this is the only coverage of moveToThread + signal wiring + quit().
+    """
+    from beamsim2.beamform.design import DesignResult
+    from beamsim2.beamform.targets import TargetSpec
+    from beamsim2.gui.filter_designer_view import DesignWorker
+
+    finished, failed = [], []
+    thread = QThread()
+    worker = DesignWorker(_synthetic_dataset(), TargetSpec(engine="ls"))
+    worker.moveToThread(thread)
+    thread.started.connect(worker.run)
+    worker.finished.connect(finished.append)
+    worker.failed.connect(failed.append)
+    worker.finished.connect(thread.quit)
+    worker.failed.connect(thread.quit)
+
+    thread.start()
+    _drive_until_stopped(qapp, thread)
+
+    assert not thread.isRunning(), "worker thread did not quit after finishing"
+    assert not failed, f"DesignWorker.failed emitted: {failed[:1]}"
+    assert len(finished) == 1
+    assert isinstance(finished[0], DesignResult)
+
+
+def test_design_worker_emits_failed_on_bad_spec(qapp):
+    """A bad spec makes design() raise; DesignWorker must surface it via 'failed' (not crash)."""
+    from beamsim2.beamform.targets import TargetSpec
+    from beamsim2.gui.filter_designer_view import DesignWorker
+
+    finished, failed = [], []
+    thread = QThread()
+    worker = DesignWorker(_synthetic_dataset(), TargetSpec(engine="does_not_exist"))
+    worker.moveToThread(thread)
+    thread.started.connect(worker.run)
+    worker.finished.connect(finished.append)
+    worker.failed.connect(failed.append)
+    worker.finished.connect(thread.quit)
+    worker.failed.connect(thread.quit)
+
+    thread.start()
+    _drive_until_stopped(qapp, thread)
+
+    assert not thread.isRunning()
+    assert not finished
+    assert len(failed) == 1 and "does_not_exist" in failed[0]
+
+
 # ---------------------------------------------------------------------------
 # Test 4: AppState dataclass
 # ---------------------------------------------------------------------------
@@ -347,6 +451,7 @@ def test_app_state_defaults():
 def test_all_gui_modules_importable():
     """All gui/ modules must import without exception."""
     import beamsim2.gui.app  # noqa: F401
+    import beamsim2.gui.filter_designer_view  # noqa: F401
     import beamsim2.gui.geometry_view  # noqa: F401
     import beamsim2.gui.parameters_panel  # noqa: F401
     import beamsim2.gui.results_view  # noqa: F401

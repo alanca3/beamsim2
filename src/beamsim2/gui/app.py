@@ -151,6 +151,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self._tabs)
 
         # Lazy import to avoid circular dependency at module level
+        from beamsim2.gui.filter_designer_view import FilterDesignerTab
         from beamsim2.gui.geometry_view import GeometryTab
         from beamsim2.gui.parameters_panel import DriversTab, SimulationTab
         from beamsim2.gui.results_view import ResultsTab
@@ -159,11 +160,13 @@ class MainWindow(QMainWindow):
         self._drv_tab = DriversTab(self._state)
         self._sim_tab = SimulationTab(self._state)
         self._res_tab = ResultsTab(self._state)
+        self._fd_tab = FilterDesignerTab(self._state)
 
         self._tabs.addTab(self._geo_tab, "Geometry")
         self._tabs.addTab(self._drv_tab, "Drivers")
         self._tabs.addTab(self._sim_tab, "Simulation")
         self._tabs.addTab(self._res_tab, "Results")
+        self._tabs.addTab(self._fd_tab, "Filter Designer")
 
         # Wire cross-tab signals
         self._geo_tab.geometryChanged.connect(self._on_geometry_changed)
@@ -264,6 +267,7 @@ class MainWindow(QMainWindow):
             self._state.h5_path = result.h5_path
         self._sim_tab.set_running(False)
         self._res_tab.load(result.dataset)
+        self._fd_tab.load(result.dataset)
         self._tabs.setCurrentIndex(3)  # jump to Results
         flagged = sum(int(np.any(v)) for v in result.flagged_frequencies.values())
         msg = "Solve complete"
@@ -300,6 +304,7 @@ class MainWindow(QMainWindow):
             self._state.h5_path = Path(path)
             self._state.result = None
             self._res_tab.load(ds)
+            self._fd_tab.load(ds)
             self._tabs.setCurrentIndex(3)
             self._status.showMessage(f"Loaded {Path(path).name}")
         except Exception as exc:

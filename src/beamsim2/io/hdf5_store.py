@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,6 +45,48 @@ from beamsim2.assembly.tensor import DriverData, RadiationDataset
 from beamsim2.core.types import ObservationPoints
 
 SCHEMA_VERSION = "1.0"
+
+
+def _check_schema_version(file_version: str, path: Path) -> None:
+    """Guard against reading an incompatible on-disk schema (contract R-09).
+
+    The reader compares the file's ``schema_version`` to the package's
+    :data:`SCHEMA_VERSION`. A different MAJOR version means the on-disk layout is
+    incompatible and is refused (``ValueError``); a matching major with a different
+    minor, or a missing version, is accepted with a :class:`UserWarning` so that
+    downstream tools (e.g. the Phase-2 filter designer) never silently consume a file
+    whose contract they do not understand.
+
+    Parameters
+    ----------
+    file_version : str
+        The ``schema_version`` attribute read from the file ("" if absent).
+    path : Path
+        File path, for the message.
+    """
+    if not file_version:
+        warnings.warn(
+            f"{path.name}: no schema_version attribute; assuming compatible with "
+            f"{SCHEMA_VERSION}. File may predate the schema-version contract.",
+            UserWarning,
+            stacklevel=3,
+        )
+        return
+    file_major = file_version.split(".")[0]
+    cur_major = SCHEMA_VERSION.split(".")[0]
+    if file_major != cur_major:
+        raise ValueError(
+            f"{path.name}: incompatible schema_version {file_version!r} "
+            f"(reader supports {SCHEMA_VERSION!r}; major versions differ). "
+            f"Re-export the dataset from a matching BeamSimII version."
+        )
+    if file_version != SCHEMA_VERSION:
+        warnings.warn(
+            f"{path.name}: schema_version {file_version!r} differs from reader "
+            f"{SCHEMA_VERSION!r} (same major). Reading anyway; verify fields.",
+            UserWarning,
+            stacklevel=3,
+        )
 
 
 def _write_attrs(h5obj: h5py.HLObject, attrs: dict) -> None:
@@ -190,6 +233,7 @@ def read_dataset(path: str | Path) -> RadiationDataset:
     with h5py.File(path, "r") as f:
         frequencies = f["frequencies"][:]  # [F] float64
         root_attrs = _read_attrs(f)
+        _check_schema_version(str(root_attrs.get("schema_version", "")), path)
 
         # ── /directions ───────────────────────────────────────────────────
         dg = f["directions"]
