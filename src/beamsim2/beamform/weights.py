@@ -79,6 +79,160 @@ def ls_pressure_match(
     return np.linalg.solve(a + lam * np.eye(m), rhs)  # [M]
 
 
+def ls_bricks(
+    H_f: np.ndarray, b_f: np.ndarray, weights: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-frequency LS normal-equation bricks ``A_f`` and ``rhs_f`` (house convention).
+
+    ``A_f = conj(H_f) W H_f^T`` (Hermitian PSD) and ``rhs_f = conj(H_f) W b_f``, with
+    ``W = diag(weights)``. These are exactly the matrices :func:`ls_pressure_match` forms
+    internally; factored out so the per-bin and frequency-coupled solvers share one
+    definition.
+
+    Parameters
+    ----------
+    H_f : np.ndarray
+        ``[M, N]`` complex128 — per-driver field at one frequency.
+    b_f : np.ndarray
+        ``[N]`` complex128 — desired pressure pattern.
+    weights : np.ndarray
+        ``[N]`` float64 — quadrature weights.
+
+    Returns
+    -------
+    A : np.ndarray
+        ``[M, M]`` complex128 Hermitian PSD normal matrix.
+    rhs : np.ndarray
+        ``[M]`` complex128 right-hand side.
+    """
+    cw = np.conj(H_f) * weights[None, :]  # conj(H_f) W   [M, N]
+    return cw @ H_f.T, cw @ b_f  # ([M, M], [M])
+
+
+def _second_difference_gram(n_f: int) -> np.ndarray:
+    """Gram matrix ``D^T D`` of the second-difference operator ``D`` (``[F, F]``, real).
+
+    ``D`` is ``[(F-2) x F]`` with rows ``[.. 1 -2 1 ..]``; penalizing ``||D x||^2``
+    penalizes curvature of ``x`` across frequency. Returns zeros for ``F < 3`` (no
+    interior bin to curve), so the coupled solve degrades to independent per-bin solves.
+    """
+    if n_f < 3:
+        return np.zeros((n_f, n_f))
+    d = np.zeros((n_f - 2, n_f))  # [(F-2), F]
+    for r in range(n_f - 2):
+        d[r, r], d[r, r + 1], d[r, r + 2] = 1.0, -2.0, 1.0
+    return d.T @ d  # [F, F] pentadiagonal, real symmetric PSD
+
+
+def ls_pressure_match_coupled(
+    H: np.ndarray,
+    b_field: np.ndarray,
+    weights: np.ndarray,
+    lam: np.ndarray,
+    mu: float,
+    freqs: np.ndarray,
+    tau: float,
+) -> np.ndarray:
+    """Frequency-COUPLED LS pressure-match: smooth (realizable) weights ``w_m(f)``.
+
+    Solves all ``F`` bins jointly as one block-diagonal LS system plus a per-driver
+    second-difference smoothness penalty across frequency, working in a "tilde" variable
+    with ONE shared modeling delay ``tau`` factored out (a common latency applied
+    identically to every driver — cardinal-rule safe; it never alters inter-driver phase).
+    Stacking is ``x[f*M + m] = wtil[m, f]`` (f-major, m-minor)::
+
+        wtil[m, f] = w[m, f] * exp(-j 2 pi f tau)              (de-ramped variable)
+        (A_f + lam_f I) wtil_f  +  mu * sum_fj (D^T D)[f, fj] wtil[:, fj]  =  ramp_f * rhs_f
+        w[m, f] = conj(ramp_f) * wtil[m, f]                    (re-apply the shared ramp)
+
+    where ``A_f, rhs_f`` are the per-bin bricks (:func:`ls_bricks`), ``ramp_f = exp(-j 2 pi
+    f tau)``, and ``D^T D`` is the second-difference Gram (zero for ``F < 3``, so this
+    reduces exactly to ``F`` independent :func:`ls_pressure_match` solves).
+
+    NOTE (verified, ``docs/Chunk3a_Findings.md``): with the complex virtual-source target
+    the per-bin weights are already smooth, so for a well-posed compact array this coupling
+    is near-inert (``mu`` small) — it is robustness insurance for the under-determined /
+    superdirective regimes hardened in 3b. ``mu`` must therefore be safe to leave small.
+
+    Parameters
+    ----------
+    H : np.ndarray
+        ``[M, F, N]`` complex128 — per-driver tensor.
+    b_field : np.ndarray
+        ``[F, N]`` complex128 — desired pattern per frequency.
+    weights : np.ndarray
+        ``[N]`` float64 — quadrature weights (sum = 4 pi).
+    lam : np.ndarray
+        ``[F]`` float64 — per-frequency Tikhonov / WNG-floor load (``>= 0``).
+    mu : float
+        Scale-invariant curvature weight (``>= 0``).
+    freqs : np.ndarray
+        ``[F]`` float64 Hz — used only to build the shared-delay ramp.
+    tau : float
+        Shared modeling delay (s), applied identically to all drivers.
+
+    Returns
+    -------
+    np.ndarray
+        ``w[M, F]`` complex128 physical weights.
+    """
+    m, n_f, _ = H.shape
+    ramp = np.exp(-1j * 2.0 * np.pi * freqs * tau)  # [F] ONE scalar per f, all drivers
+    dtd = _second_difference_gram(n_f)  # [F, F] real
+
+    big = np.zeros((n_f * m, n_f * m), dtype=np.complex128)  # [FM, FM]
+    g = np.zeros(n_f * m, dtype=np.complex128)  # [FM]
+    for fi in range(n_f):
+        a_f, rhs_f = ls_bricks(H[:, fi, :], b_field[fi], weights)  # [M,M], [M]
+        sl = slice(fi * m, (fi + 1) * m)
+        big[sl, sl] = a_f + lam[fi] * np.eye(m)
+        g[sl] = ramp[fi] * rhs_f  # tilde RHS so the solution is wtil = ramp * w
+    # Per-driver mu * (D^T D) curvature coupling across frequency (real, symmetric PSD).
+    if mu > 0.0:
+        for mm in range(m):
+            for fi in range(n_f):
+                row = fi * m + mm
+                for fj in range(n_f):
+                    if dtd[fi, fj] != 0.0:
+                        big[row, fj * m + mm] += mu * dtd[fi, fj]
+    wtil = np.linalg.solve(big, g).reshape(n_f, m).T  # [M, F] de-ramped weights
+    return wtil * np.conj(ramp)[None, :]  # [M, F] undo the shared ramp
+
+
+def phase_roughness(w: np.ndarray, freqs: np.ndarray, tau: float) -> float:
+    """Cross-frequency filter roughness: ``max_m max |2nd-diff of unwrapped phase|`` (rad).
+
+    A realizability proxy for the per-driver filters. One shared modeling delay ``tau`` is
+    removed first (``wtil[m, f] = w[m, f] exp(-j 2 pi f tau)``) so a common latency — which
+    is allowed and does not change the beam — is not counted as roughness. A small value
+    means the weight phase bends gently across frequency, i.e. a short, causal, realizable
+    filter.
+
+    Parameters
+    ----------
+    w : np.ndarray
+        ``[M, F]`` complex128 per-driver weights.
+    freqs : np.ndarray
+        ``[F]`` float64 Hz.
+    tau : float
+        Shared modeling delay to remove (s).
+
+    Returns
+    -------
+    float
+        The worst-driver max second difference of unwrapped phase (rad); ``0.0`` if ``F<3``.
+    """
+    ramp = np.exp(-1j * 2.0 * np.pi * freqs * tau)  # [F]
+    wt = w * ramp[None, :]  # [M, F] shared delay removed
+    worst = 0.0
+    for mm in range(wt.shape[0]):
+        phi = np.unwrap(np.angle(wt[mm]))  # [F]
+        d2 = np.abs(np.diff(phi, n=2))  # [F-2]
+        if d2.size:
+            worst = max(worst, float(np.max(d2)))
+    return worst
+
+
 def mvdr(H_f: np.ndarray, look_idx: int, weights: np.ndarray, eps: float) -> np.ndarray:
     """MVDR (minimum-variance distortionless response), loaded (Stage P2-1).
 

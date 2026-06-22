@@ -4,6 +4,61 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] — 2026-06-22 — Bug-Fix Chunk 3a: beamformer core formulation fix
+
+First sub-chunk of the beamforming/filter-designer rebuild (#8, `docs/Bug_Fix_Proposal.md`).
+Fixes the three confirmed LS pressure-match defects so a **2-driver dual-opposed cardioid**
+holds across a band with realizable filters and an honest robustness floor — the new
+cardinal-rule proof. Research-led and **empirically de-risked against the real forward model
+before any package change**; the methodology, measured numbers, and two corrected research
+premises are recorded in `docs/Chunk3a_Findings.md`. Schema unchanged (no `schema_version`
+bump). Kickoff decisions confirmed: Auto-Design = principled escalation ladder (3c);
+in-room = CEA-2034-A, with target DI/beamwidth/constant-directivity kept as 3d objectives.
+
+### Fixed
+- **LS target was real and frequency-independent (defect #1).** `beamform/targets.py` broadcast
+  a real `a + (1-a) cos` pattern across all frequencies and cast custom targets through
+  `np.real`. Replaced with a **complex, frequency-dependent virtual-source target**
+  (`build_virtual_target`): the field of an ideal first-order source (origin monopole +
+  normalized origin dipole) synthesized with the **same** `monopole_field` operator the solver
+  inverts, so the target carries the correct complex angular structure and finite-radius radial
+  phase. Custom complex targets are preserved (no more `np.real` cast). VERIFIED `b/g_mono =
+  a+(1-a)cos` to 6e-8.
+- **Per-frequency solves were uncoupled / ringy (defect #2).** Added a frequency-COUPLED LS
+  path (`ls_pressure_match_coupled`): all bins solved jointly with a per-driver second-difference
+  smoothness penalty across frequency, factoring out ONE shared modeling delay (common latency,
+  cardinal-rule safe). Degrades exactly to the per-bin solve for `F < 3`.
+- **No honest WNG floor for LS (defect #3).** Replaced the old `lambda_for_ls` Tikhonov-fraction
+  heuristic (which collapsed directivity at the default robustness) with an in-solve
+  per-frequency WNG-floor **grid search** (LS WNG is non-monotone in λ, so bisection is invalid),
+  reusing the existing `white_noise_gain_db` / `max_white_noise_gain_db`. Bins whose WNG ceiling
+  is below the floor are flagged in `feasible_mask` and rolled off gracefully — never silent
+  garbage.
+
+### Added
+- **V-cardioid gate** — `tests/test_beamform_cardioid_band.py`: the dual-opposed cardioid held
+  across 150–600 Hz (DI ≈ 4.77 dB, rear null ≤ −22 dB at every bin); filter realizability
+  (phase curvature ~0.02 rad vs the pre-3a 0.47 rad); honest WNG floor binds gracefully; the
+  **collapse-to-origin cardinal-rule control** (zero inter-driver phase → DI 0); the complex
+  frequency-dependent target; and direct frequency-coupling unit tests.
+- **New beamform API** — `targets.build_virtual_target` / `_first_order_a`;
+  `weights.ls_bricks` / `ls_pressure_match_coupled` / `phase_roughness`;
+  `regularize.ls_wng_lambda_grid`. `design()` records `ls_tau_s` / `ls_lambda` provenance.
+
+### Decisions / departures (flagged per CLAUDE.md; see `docs/Chunk3a_Findings.md`)
+- **DR-P2-03:** the LS engine (`spec.engine == "ls"`) is now frequency-coupled by default,
+  degrading to the per-bin solve for `F < 3` so all existing single-bin LS tests stay green.
+- The proposal's premise *"a real LS target cannot make a cardioid"* is **empirically false for
+  M=2** — the LS absorbs the global phase, so a real and the complex target give identical
+  per-frequency DI/null. The complex target's real, measured payoff is **cross-frequency filter
+  realizability** (30× smoother), which is the actual goal.
+- **Frequency coupling is not load-bearing for the 2-driver gate** (the target alone delivers
+  realizable filters); it is kept as benign, beam-preserving insurance for 3b's
+  superdirective / under-determined regimes and is unit-tested directly, not via the gate.
+- The cardioid band is **physics-limited** (~150–670 Hz for d = 0.086 m): above kd ≈ π the
+  2-element pair spatially aliases (the analytic delay-sum ground truth shows the identical
+  taper). Wider bands need more drivers / smaller spacing.
+
 ## [1.2.0] — 2026-06-21 — Bug-Fix Chunk 2: results visualization & diagnostics
 
 Second chunk of the First-Run Bug-Fix campaign (`docs/Bug_Fix_Proposal.md`): make the

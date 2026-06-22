@@ -18,18 +18,22 @@ from beamsim2.assembly.tensor import stacked_h_full
 from beamsim2.beamform.covariance import covariance, look_vector
 from beamsim2.beamform.forward import directivity_metrics, steered_field
 from beamsim2.beamform.regularize import (
-    lambda_for_ls,
     loaded_mvdr_weights,
+    ls_wng_lambda_grid,
+    max_white_noise_gain_db,
     solve_loading_for_wng,
     white_noise_gain_db,
 )
 from beamsim2.beamform.targets import TargetSpec, build_target
 from beamsim2.beamform.weights import (
     lcmv,
+    ls_bricks,
     ls_pressure_match,
+    ls_pressure_match_coupled,
     luo_mscd,
     matched_field,
     max_directivity,
+    phase_roughness,
 )
 
 
@@ -59,6 +63,97 @@ class DesignResult:
     attrs: dict = field(default_factory=dict)
 
 
+def _choose_shared_delay(
+    h: np.ndarray,
+    b_field: np.ndarray,
+    w_quad: np.ndarray,
+    freqs: np.ndarray,
+    a_list: np.ndarray,
+) -> float:
+    """Pick ONE shared modeling delay ``tau`` (s) that minimizes cross-frequency roughness.
+
+    Solves the per-bin LS at a tiny load to get raw weights, then chooses the single shared
+    delay (a common latency applied identically to all drivers -> cardinal-rule safe) that
+    minimizes the worst-driver second-difference of the unwrapped weight phase. With the
+    complex virtual-source target this comes out ~0, confirming the realizability win lives
+    in the target, not the delay (``docs/Chunk3a_Findings.md``).
+    """
+    m, n_f, _ = h.shape
+    w_raw = np.empty((m, n_f), dtype=np.complex128)  # [M, F] lightly-loaded per-bin weights
+    for fi in range(n_f):
+        lam0 = 1e-6 * float(np.real(np.trace(a_list[fi]))) / m
+        w_raw[:, fi] = ls_pressure_match(h[:, fi, :], b_field[fi], w_quad, lam0)
+    span = 1.0 / (freqs[-1] - freqs[0])  # period scale of the band
+    cand = np.linspace(-1.5 * span, 1.5 * span, 301)  # candidate shared delays (s)
+    rough = [phase_roughness(w_raw, freqs, float(t)) for t in cand]
+    return float(cand[int(np.argmin(rough))])
+
+
+def _design_ls_coupled(
+    h: np.ndarray,
+    b_field: np.ndarray,
+    w_quad: np.ndarray,
+    freqs: np.ndarray,
+    look: int,
+    wng_floor_db: float,
+    *,
+    frac_mu: float = 1e-2,
+    n_grid: int = 48,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """Frequency-coupled LS pressure-match with an honest per-frequency WNG floor.
+
+    Fixes Chunk-3a defects #2 (uncoupled, ringy solves) and #3 (no honest LS WNG floor):
+
+    1. Per bin, grid-search the Tikhonov load ``lam_f`` for the SMALLEST loading whose
+       distortionless WNG meets ``wng_floor_db`` (LS WNG is non-monotone in ``lam``, so a
+       grid search, not bisection). Bins whose WNG ceiling is below the floor are flagged
+       infeasible and given the most-robust loading (graceful roll-off, never silent garbage).
+    2. One final frequency-COUPLED solve (:func:`ls_pressure_match_coupled`) with those loads
+       and a small second-difference smoothness penalty (a no-op for ``F<3``), yielding smooth
+       realizable filters. The coupling is near-inert for a well-posed compact array (the
+       target already gives smooth filters) and earns its keep in 3b's harder regimes.
+
+    Returns ``(weights[M, F], feasible[F], lam[F], tau)``. The caller recomputes the achieved
+    WNG from the final coupled weights, so any bin pushed below the floor by coupling is still
+    flagged; ``lam`` and ``tau`` are recorded as provenance.
+    """
+    m, n_f, _ = h.shape
+    a_list = np.empty((n_f, m, m), dtype=np.complex128)  # [F, M, M] per-bin normal matrices
+    rhs_list = np.empty((n_f, m), dtype=np.complex128)  # [F, M]
+    c_list = np.empty((n_f, m), dtype=np.complex128)  # [F, M] look vectors
+    for fi in range(n_f):
+        a_list[fi], rhs_list[fi] = ls_bricks(h[:, fi, :], b_field[fi], w_quad)
+        c_list[fi] = look_vector(h[:, fi, :], look)
+
+    tau = _choose_shared_delay(h, b_field, w_quad, freqs, a_list) if n_f >= 3 else 0.0
+    mu = frac_mu * float(np.mean([np.real(np.trace(a_list[fi])) for fi in range(n_f)])) / 6.0
+
+    # (1) per-bin WNG-floor search (cheap, uncoupled): smallest lam_f meeting the floor.
+    lam = np.empty(n_f)  # [F]
+    feasible = np.zeros(n_f, dtype=bool)  # [F]
+    for fi in range(n_f):
+        grid = ls_wng_lambda_grid(a_list[fi], n_grid=n_grid)  # [n_grid] ascending
+        if wng_floor_db >= max_white_noise_gain_db(c_list[fi]) - 0.02:
+            lam[fi] = grid[-1]  # floor above ceiling -> max robustness, infeasible
+            feasible[fi] = False
+            continue
+        best_lam, best_wng = grid[-1], -np.inf
+        for lg in grid:
+            w_f = np.linalg.solve(a_list[fi] + lg * np.eye(m), rhs_list[fi])  # [M] per-bin
+            wng = white_noise_gain_db(w_f, c_list[fi])
+            if wng >= wng_floor_db:
+                lam[fi], feasible[fi] = lg, True  # smallest loading meeting the floor
+                break
+            if wng > best_wng:
+                best_lam, best_wng = lg, wng
+        else:
+            lam[fi], feasible[fi] = best_lam, False  # floor unreachable on grid -> best effort
+
+    # (2) one coupled solve with the chosen loads -> smooth, realizable weights.
+    w = ls_pressure_match_coupled(h, b_field, w_quad, lam, mu, freqs, tau)  # [M, F]
+    return w, feasible, lam, tau
+
+
 def design(ds, spec: TargetSpec) -> DesignResult:
     """Design per-driver weights for ``spec`` against the dataset ``ds`` (Stages P2-1/2).
 
@@ -80,16 +175,25 @@ def design(ds, spec: TargetSpec) -> DesignResult:
     w_quad = obs.weights  # [N]
     c_sound = float(ds.attrs.get("speed_of_sound", 343.2))
 
-    target = build_target(spec, obs, ds.frequencies)
+    target = build_target(spec, obs, ds.frequencies, c_sound=c_sound)
     look = target.look_idx
-
-    wng_ceiling_db = 10.0 * np.log10(m)  # the M-driver delay-and-sum WNG ceiling
-    # Single robustness knob (wng_floor_db) -> an LS Tikhonov fraction s in [0, 1].
-    s_ls = float(np.clip((spec.wng_floor_db + 20.0) / (wng_ceiling_db + 20.0), 0.0, 1.0))
 
     weights = np.zeros((m, n_f), dtype=np.complex128)  # [M, F]
     wng_db = np.zeros(n_f)  # [F]
     feasible = np.ones(n_f, dtype=bool)  # [F]
+
+    # The LS engine is frequency-COUPLED (DR-P2-03): all bins are solved jointly once, before
+    # the per-frequency loop, for smooth realizable filters + an honest WNG floor. It degrades
+    # to independent per-bin solves for F<3 (so single-bin tests are unchanged). Every other
+    # engine stays per-frequency in the loop below.
+    ls_weights: np.ndarray | None = None  # [M, F]
+    ls_feasible: np.ndarray | None = None  # [F]
+    ls_lam: np.ndarray | None = None  # [F]
+    ls_tau: float = 0.0
+    if spec.engine == "ls":
+        ls_weights, ls_feasible, ls_lam, ls_tau = _design_ls_coupled(
+            h, target.b_field, w_quad, ds.frequencies, look, spec.wng_floor_db
+        )
 
     # Constant-DI (engine #2) is a two-pass: pass 1 finds each frequency's directivity
     # ceiling tau_max; the constant target tau* is the min over frequency (so it is feasible
@@ -113,9 +217,8 @@ def design(ds, spec: TargetSpec) -> DesignResult:
         if spec.engine == "delay_sum":
             w_f = matched_field(h_f, look)
         elif spec.engine == "ls":
-            a_mat = (np.conj(h_f) * w_quad[None, :]) @ h_f.T  # [M, M]
-            lam = lambda_for_ls(s_ls, a_mat)
-            w_f = ls_pressure_match(h_f, target.b_field[f], w_quad, lam)
+            w_f = ls_weights[:, f]  # from the frequency-coupled pre-solve (DR-P2-03)
+            feasible[f] = ls_feasible[f]
         elif spec.engine == "mvdr":
             r = covariance(h_f, w_quad)
             eps, feas = solve_loading_for_wng(r, c, spec.wng_floor_db)
@@ -159,4 +262,7 @@ def design(ds, spec: TargetSpec) -> DesignResult:
     }
     if tau_star is not None:
         attrs["constant_gdi_db"] = 10.0 * np.log10(tau_star)
+    if spec.engine == "ls":
+        attrs["ls_tau_s"] = ls_tau  # shared modeling delay (s) used by the coupled solve
+        attrs["ls_lambda"] = ls_lam.tolist()  # per-bin Tikhonov / WNG-floor loads
     return DesignResult(weights=weights, steered_field=p, metrics=metrics, spec=spec, attrs=attrs)
