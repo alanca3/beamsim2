@@ -4,6 +4,50 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-06-21 — Bug-Fix Chunk 2: results visualization & diagnostics
+
+Second chunk of the First-Run Bug-Fix campaign (`docs/Bug_Fix_Proposal.md`): make the
+results views **trustworthy and legible** (#9, #10, #11), add a CEA-2034-A spinorama panel,
+and add a far-field display option. Built on Chunk 1's proven `reference_axis` metadata.
+Schema unchanged (no `schema_version` bump). Diagnose-first confirmed the proposal's
+findings in code; previews of the fixed views are in `docs/chunk2_preview/`.
+
+### Fixed
+- **Polar plots were jagged (#10).** `_PolarView` masked ~3–6 scattered Lebedev/icosphere
+  points by a crude `|cos θ| < 0.25` band and line-plotted them; it also hardcoded +z. Now
+  it **SH-resamples** (`core.sh_transform`) onto a smooth 361-point great-circle arc in the
+  horizontal or vertical plane built from the dataset's **reference axis**.
+- **Directivity map was misleading (#9).** `_DirectivityMapView` θ-sorted all N points
+  (mixing azimuths) and `imshow`'d on a **linear** frequency axis. Replaced with separate
+  **horizontal & vertical sonograms** on a **log** frequency axis, SH-resampled per
+  frequency (`pcolormesh`, normalised dB, shared 0-dB reference).
+
+### Added
+- **CEA-2034-A / spinorama panel (#11)** — new `metrics/cea2034.py`: On-Axis, Listening
+  Window, Early Reflections, Sound Power, the two DI curves (SPDI/ERDI), and the Estimated
+  In-Room response, computed with the **exact CTA-2034-A angle sets and sound-power area
+  weights** (verified against the `pierreaubert/spinorama` master implementation). All
+  spatial averages are power-domain; a new "CEA2034" Results sub-tab plots SPL curves (left
+  axis) and DI curves (right axis) on a log-f axis.
+  - *Departure flagged (CLAUDE.md):* the proposal said "reuse `power_di.directivity_index`",
+    but CEA DI (LW−SP, LW−ER) is a different quantity than max/mean intensity; the CTA
+    definitions are implemented, with the sphere-quadrature SP kept only as a test cross-check.
+- **Far-field display option** — new `core/field_referencing.py`: a dataset-wide,
+  **display-only** referencing toggle (Near-field / Far-field: acoustic-center / Far-field:
+  SH extrapolation) that every directional view honours. Acoustic-center divides out each
+  driver's 1/r spreading + path-length phase about its position; SH extrapolation gives the
+  true r→∞ radiating pattern via outgoing spherical-Hankel ratios. Both make a low-frequency
+  single driver read near-omni; **neither ever mutates the stored H-tensor** (cardinal rule).
+- **H_bem vs H_full in-UI (#11)** — a field selector + data-contract tooltip on every
+  directional view, so the user always knows whether raw-BEM (unit cone velocity) or the
+  full terminal response is shown.
+- **`core.sphere.reference_frame`** — the right-handed (front, right, up) measurement frame
+  shared by the polar, sonogram, and CEA2034 orbit construction.
+- Tests: `tests/test_cea2034.py` (angle sets + monopole/dipole/cos² vs hand-computed
+  spinorama values + reference-axis invariance + SP quadrature cross-check),
+  `tests/test_field_referencing.py` (far-field omni behaviour + cardinal-rule guard), and
+  extended `tests/test_gui_smoke.py` (polar/sonogram/CEA sub-tabs + referencing combo).
+
 ## [1.1.0] — 2026-06-21 — Bug-Fix Chunk 1: data & solver correctness + logging foundation
 
 First chunk of the First-Run Bug-Fix campaign (`docs/Bug_Fix_Proposal.md`): fix the

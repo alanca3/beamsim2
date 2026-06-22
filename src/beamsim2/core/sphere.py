@@ -81,6 +81,59 @@ def nearest_direction_index(
     return int(np.argmax(projections))
 
 
+def reference_frame(
+    axis: tuple[float, float, float] | np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Orthonormal (front, right, up) frame for a loudspeaker's reference axis.
+
+    Builds the right-handed measurement frame the polar, sonogram and CEA-2034-A
+    views use to define their horizontal and vertical great circles.  ``front`` is
+    the loudspeaker's on-axis/look direction; ``up`` is the in-frame vertical (so a
+    vertical orbit angle of ``+β`` points *up* — the CEA ceiling bounces land at +β,
+    floor at −β); ``right`` completes a right-handed triad.
+
+    Construction
+    ------------
+    - ``front`` = normalised ``axis`` (falls back to +z if ``axis`` is zero).
+    - The world "up" reference is +z, unless ``front`` is (anti)parallel to +z (e.g.
+      the default +z-facing test geometry), in which case +y is used so the frame is
+      still well defined.
+    - ``up`` = the world-up reference projected ⟂ ``front`` and normalised.
+    - ``right`` = ``up × front`` (unit), so ``{front, right, up}`` is right-handed and
+      ``front = right × up``.
+
+    Parameters
+    ----------
+    axis : tuple of 3 float or np.ndarray
+        The reference / front axis in the dataset's Cartesian frame.
+
+    Returns
+    -------
+    front, right, up : np.ndarray
+        Three ``[3]`` float64 unit vectors forming a right-handed orthonormal frame.
+
+    Notes
+    -----
+    For a ``front`` that is not vertical (e.g. a +x-facing speaker), this yields the
+    natural studio convention: a floor-parallel horizontal orbit and a vertical orbit
+    containing world-up.  For a +z-facing speaker (no distinct world-up), the H/V
+    assignment is conventional but consistent and stable.
+    """
+    front = np.asarray(axis, dtype=np.float64).reshape(3)
+    n = float(np.linalg.norm(front))
+    front = np.array(DEFAULT_REFERENCE_AXIS, dtype=np.float64) if n == 0.0 else front / n
+
+    world_up = np.array([0.0, 0.0, 1.0])
+    if abs(float(front @ world_up)) > 0.999:  # front ∥ +z → pick +y as the up reference
+        world_up = np.array([0.0, 1.0, 0.0])
+
+    up = world_up - float(world_up @ front) * front
+    up /= np.linalg.norm(up)
+    right = np.cross(up, front)
+    right /= np.linalg.norm(right)
+    return front, right, up
+
+
 # ---------------------------------------------------------------------------
 # Internal grid type (unit-sphere only; no radius)
 # ---------------------------------------------------------------------------
