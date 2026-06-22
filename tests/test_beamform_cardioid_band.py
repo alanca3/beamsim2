@@ -299,3 +299,51 @@ def test_coupling_reduces_curvature_preserving_null():
     P1 = np.sum(w1[:, :, None] * h, axis=0)  # [F,N]
     for fi in range(len(freqs)):
         assert _rear_null_db(P1[fi], rear) <= -20.0
+
+
+# ---------------------------------------------------------------------------
+# frac_mu re-validation (Chunk-3b carry-forward of the 3a open action)
+# ---------------------------------------------------------------------------
+def test_ls_frac_mu_default_is_active_and_beam_safe_on_under_determined_stressor():
+    """The shipped ``frac_mu=1e-2`` meaningfully smooths an under-determined LS solve, beam-safely.
+
+    3a's findings flagged that ``frac_mu=1e-2`` is near-inert on the well-posed 2-driver cardioid
+    (the integration path never exercised the coupling). 3b re-validates the default on a fixture
+    where it matters: a 3-driver near-collinear array driven BELOW its comfortable band
+    (80-500 Hz, supercardioid, a strict WNG floor) makes the per-bin WNG-floor loading swing across
+    frequency, giving the cross-frequency coupling real authority. Here ``frac_mu=1e-2`` cuts the
+    cross-frequency phase roughness meaningfully while preserving the beam (DI drift small), so the
+    default is kept (``docs/Chunk3b_Findings.md``).
+    """
+    from beamsim2.beamform.design import _design_ls_coupled
+    from beamsim2.beamform.forward import steered_field
+    from beamsim2.validation.power_di import directivity_index
+
+    freqs = np.geomspace(80.0, 500.0, 12)
+    pos = [np.array([0.0, 0.0, -0.05]), np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, 0.05])]
+    ds, obs = _dual_opposed_dataset(freqs, positions=pos)
+    h = stacked_h_full(ds)  # [M,F,N]
+    spec = TargetSpec(
+        mode="preset",
+        preset="supercardioid",
+        steer_dir=np.array([0.0, 0.0, 1.0]),
+        engine="ls",
+        wng_floor_db=-3.0,
+    )
+    target = build_target(spec, obs, freqs, c_sound=_C)
+    look = target.look_idx
+
+    b = target.b_field
+    w0, feas0, _, tau0 = _design_ls_coupled(h, b, obs.weights, freqs, look, -3.0, frac_mu=0.0)
+    w1, feas1, _, tau1 = _design_ls_coupled(h, b, obs.weights, freqs, look, -3.0, frac_mu=1e-2)
+
+    # (1) The coupling is ACTIVE here: it cuts the worst-driver cross-frequency phase roughness.
+    r0 = phase_roughness(w0, freqs, tau0)
+    r1 = phase_roughness(w1, freqs, tau1)
+    assert r1 < 0.85 * r0, f"frac_mu=1e-2 inert on the stressor: roughness {r0:.3f} -> {r1:.3f}"
+
+    # (2) It is BEAM-SAFE: the directivity is essentially unchanged at every bin.
+    di0 = directivity_index(steered_field(h, w0), obs.weights)
+    di1 = directivity_index(steered_field(h, w1), obs.weights)
+    assert np.max(np.abs(di1 - di0)) < 0.5, "coupling shifted the beam too much"
+    assert np.all(feas1), "the stressor band should stay feasible at the -3 dB floor"

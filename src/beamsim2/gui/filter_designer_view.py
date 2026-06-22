@@ -220,6 +220,9 @@ class FilterDesignerTab(QWidget):
             steer_dir=self._steer_dir(),
             wng_floor_db=float(self._wng.value()),
             accept_halfangle_deg=float(self._accept.value()),
+            # The constant_di / max_directivity engines use Luo's proper directivity INDEX
+            # (constant directivity in the loudspeaker sense); see docs/Chunk3b_Findings.md.
+            directivity_mode="index",
             engine=_ENGINES[self._engine.currentIndex()][1],
         )
 
@@ -254,7 +257,9 @@ class FilterDesignerTab(QWidget):
         wng = float(m["wng_db"][fi])
         feas = bool(np.all(m["feasible_mask"]))
         extra = ""
-        if "constant_gdi_db" in result.attrs:
+        if "constant_di_db" in result.attrs:  # directivity_mode="index" (Luo directivity index)
+            extra = f"  constant DI = {result.attrs['constant_di_db']:.2f} dB"
+        elif "constant_gdi_db" in result.attrs:  # directivity_mode="region" (cap-ratio GDI)
             extra = f"  constant GDI = {result.attrs['constant_gdi_db']:.2f} dB"
         self._metrics.setText(
             f"Engine: {result.attrs['engine']}  ·  DI ≈ {di:.1f} dB  ·  WNG ≈ {wng:.1f} dB  ·  "

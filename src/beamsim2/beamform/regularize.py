@@ -136,6 +136,115 @@ def solve_loading_for_wng(
     return math.sqrt(eps_lo * eps_hi), True
 
 
+def floor_covariances(
+    A: np.ndarray, R: np.ndarray, eps_min: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Add a small RELATIVE diagonal floor to both generalized-eigenproblem matrices.
+
+    The constant-DI / max-directivity engines solve a generalized eigenproblem ``A w = tau R w``
+    and a secular root of ``A - tau R``. At band edges (and for the rank-1 proper-DI ``A = c c^H``)
+    these can be numerically barely-indefinite or near-singular. A scale-invariant floor
+    ``eps_min * trace(R)/M`` on the diagonal of **both** A and R keeps every bin well-posed without
+    disturbing well-conditioned bins (at a fixed ``tau`` the achieved directivity is invariant to
+    ``eps_min`` to < 0.1 dB; ``docs/Chunk3b_Findings.md``).
+
+    Parameters
+    ----------
+    A, R : np.ndarray
+        ``[M, M]`` complex128 Hermitian PSD accept / reject covariances.
+    eps_min : float
+        Relative floor fraction (e.g. ``1e-7``).
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        ``(A_floored, R_floored)``.
+    """
+    m = R.shape[0]
+    f = eps_min * float(np.real(np.trace(R))) / m  # scale-invariant absolute floor
+    eye = f * np.eye(m)
+    return A + eye, R + eye
+
+
+def solve_maxdir_loading_for_wng(
+    A: np.ndarray,
+    R: np.ndarray,
+    c: np.ndarray,
+    wng_floor_db: float,
+    *,
+    eps_min: float = 1e-7,
+    tol_db: float = 0.02,
+    max_iter: int = 60,
+) -> tuple[np.ndarray, float, float, bool]:
+    """Diagonally load the *reject* covariance so max-directivity meets a WNG floor.
+
+    Maximum-directivity (the top generalized eigenvector of ``(A, R)``) is the directivity
+    *ceiling* and is freely superdirective — its white-noise gain can plunge tens of dB at low
+    frequency. Loading the reject covariance, ``w = top-eig(A, R + eps I)``, walks the solution
+    from the fragile ceiling (``eps -> 0``) toward the robust matched-field beam (``eps -> inf``);
+    ``WNG(eps)`` is monotone increasing, so a geometric bisection on ``eps`` lands the floor. If
+    the floor exceeds the matched-field ceiling ``10log10||c||^2`` it is unreachable: clamp to max
+    robustness and flag (graceful roll-off, never silent superdirective garbage). Mirrors the
+    MVDR floor (:func:`solve_loading_for_wng`) for the directivity engines.
+
+    Parameters
+    ----------
+    A, R : np.ndarray
+        ``[M, M]`` accept / reject covariances (whichever directivity objective is in force).
+    c : np.ndarray
+        ``[M]`` look vector (house convention).
+    wng_floor_db : float
+        Target WNG floor (dB).
+    eps_min : float
+        Relative ``eps_min`` floor applied to A and R first (:func:`floor_covariances`).
+    tol_db, max_iter : float, int
+        Bisection tolerance and iteration cap.
+
+    Returns
+    -------
+    w : np.ndarray
+        ``[M]`` complex128 distortionless max-directivity weights meeting the floor.
+    eps : float
+        The reject-covariance loading used.
+    wng_db : float
+        Achieved WNG (dB).
+    feasible : bool
+        ``False`` if the floor exceeds the matched-field WNG ceiling (clamped + flagged).
+    """
+    from beamsim2.beamform.weights import max_directivity
+
+    A, R = floor_covariances(A, R, eps_min)
+    m = R.shape[0]
+    scale = float(np.real(np.trace(R))) / m
+    wng_ceiling = max_white_noise_gain_db(c)
+
+    def wng_w(eps: float) -> tuple[float, np.ndarray]:
+        w, _ = max_directivity(A, R, eps=eps, c=c)  # top gen-eig of (A, R + eps I)
+        return white_noise_gain_db(w, c), w
+
+    eps_lo, eps_hi = 1e-12 * scale, 1e6 * scale
+    wlo, wlo_w = wng_w(eps_lo)
+    if wlo >= wng_floor_db:
+        return wlo_w, eps_lo, wlo, True  # already robust at minimal load
+    if wng_floor_db >= wng_ceiling - tol_db:
+        whi, whi_w = wng_w(eps_hi)
+        return whi_w, eps_hi, whi, False  # floor above ceiling -> clamp + flag
+
+    w_mid = wlo_w
+    for _ in range(max_iter):
+        eps_mid = math.sqrt(eps_lo * eps_hi)  # geometric mean = bisection on log eps
+        wm, w_mid = wng_w(eps_mid)
+        if wm < wng_floor_db:
+            eps_lo = eps_mid
+        else:
+            eps_hi = eps_mid
+        if abs(wm - wng_floor_db) < tol_db:
+            return w_mid, eps_mid, wm, True
+    eps_f = math.sqrt(eps_lo * eps_hi)
+    wf, w_mid = wng_w(eps_f)
+    return w_mid, eps_f, wf, True
+
+
 def lambda_for_ls(robustness: float, a_matrix: np.ndarray) -> float:
     """Map a robustness slider ``s in [0, 1]`` to an LS Tikhonov ``lambda``.
 

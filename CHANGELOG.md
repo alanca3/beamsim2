@@ -4,6 +4,62 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] — 2026-06-22 — Bug-Fix Chunk 3b: constant-directivity hardening
+
+Second sub-chunk of the beamforming/filter-designer rebuild (#8, `docs/Bug_Fix_Proposal.md`).
+The constant-directivity engine now actually holds **constant directivity** end-to-end on a
+multi-driver array (new engine-level **V-CBT** gate), with realizable filters and an honest
+white-noise-gain floor. Research-led and **empirically de-risked against the real forward model**
+before any package change (diagnose → 4-probe research+prototype workflow → synthesize); the
+methodology, measured numbers, and **three corrected premises** are recorded in
+`docs/Chunk3b_Findings.md`. Schema unchanged (no `schema_version` bump). Kickoff decisions
+confirmed: **MSCD-only** (MECD stays a documented stub); **constraint-preserving** frequency
+regularization (not 3a's additive penalty — and the evidence showed the constraint-preserving op
+is a global-phase alignment, not a smoothing kernel).
+
+### Fixed
+
+- **`constant_di` optimized the wrong objective (the headline defect).** The shipped engine held a
+  *front-cap-to-total power ratio* (`A` = accept-cap covariance) constant — but that lets the main
+  lobe narrow while the proper directivity index varies 6.7 dB and the −6 dB beamwidth drifts
+  (std 17°). Added `TargetSpec.directivity_mode`: **`"index"`** holds **Luo's proper directivity
+  index** (`A = c cᴴ`, `R` = whole sphere — matches arXiv:2407.01860) flat to ~1e-11 dB by
+  construction; `"region"` (default, back-compat) keeps the old cap-ratio objective. The GUI and the
+  V-CBT gate select `"index"`. VERIFIED: constant directivity index + ~constant beamwidth (ptp 7°,
+  std 2.3°) across the flat-CBT band on a 50-driver cap.
+- **No WNG floor on `constant_di` / `max_directivity` (Chunk-3a defect #3 carry).** `constant_di`
+  now picks the largest *single shared* `tau*` whose worst-bin WNG meets the floor (the WNG-vs-`tau`
+  curve is **unimodal**, so the search lives on the descending branch — a naïve "lower `tau`" would
+  collapse it); infeasible bands are flagged (`band_feasible`), never silent superdirective garbage.
+  `max_directivity` now loads the reject covariance to meet the floor (`solve_maxdir_loading_for_wng`),
+  taming its −15 dB superdirective blow-up.
+- **Ringy, unrealizable constant-DI filters.** Per-bin MSCD weights are ~5 rad rough across
+  frequency — almost entirely a spurious per-bin global phase (secular-root sign) plus noise on
+  near-silent drivers. Fixed with a **cardinal-safe global-phase continuity alignment + one shared
+  modeling delay** (`align_global_phase`, `choose_shared_delay_complex`) — both per-frequency global
+  factors, so `|P|`, the inter-driver phase, DI, beamwidth and WNG are exactly invariant. Honest
+  realizability is now gated on `magnitude_gated_phase_roughness` (raw `phase_roughness` overcounts
+  silent-driver noise); measured 0.107 rad after alignment.
+- **Ill-posed edge bins.** A relative `eps_min·I` floor (`floor_covariances`, default 1e-7) on the
+  generalized eigenproblem / secular root keeps every bin well-posed without disturbing the achieved
+  directivity (`<0.1 dB` at fixed `tau`).
+
+### Validated / unchanged
+
+- **`frac_mu = 1e-2` kept (3a carry-forward re-validated).** 3a flagged it as near-inert on the
+  well-posed cardioid; on a genuine under-determined stressor (3-driver near-collinear, 80–500 Hz,
+  supercardioid, strict floor) it cuts cross-frequency roughness ~39% at a DI drift of 0.11 dB and is
+  beam-safe through 1e-1 (harmful at ≥3e-1). New regression test locks this in.
+- **MECD** remains a documented `NotImplementedError` stub (MSCD-only, per kickoff decision 1).
+
+### Gate / tests
+
+- New **V-CBT engine-level gate** `tests/test_beamform_cbt_band.py`: `design(constant_di, "index")`
+  on a 50-driver cap holds constant directivity index + ~constant beamwidth, realizable filters, an
+  honest WNG floor, with two cardinal-rule proofs (near-collapse → DI ≈ 0; shared-ramp invariant).
+- Chunk-3a V-cardioid, V-RT, V-5 phase-origin, V-1/V-2 and all existing constant-DI tests stay green
+  (full CI suite: 446 passed).
+
 ## [1.2.1] — 2026-06-22 — Bug-Fix Chunk 3a: beamformer core formulation fix
 
 First sub-chunk of the beamforming/filter-designer rebuild (#8, `docs/Bug_Fix_Proposal.md`).
