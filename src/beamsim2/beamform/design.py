@@ -246,7 +246,9 @@ def _design_constant_di(
         tau_lo = float(np.clip(np.min(tau_peak), 1e-12, ceiling))
         if min_wng(tau_lo) < floor:
             tau_star, band_feasible = tau_lo, False  # floor unreachable at constant DI -> flag
-        else:
+        elif min_wng(tau_lo) >= min_wng(ceiling):
+            # Expected case: min-over-bins WNG is monotone-decreasing on [tau_lo, ceiling]
+            # (tau_lo sits at the per-bin WNG humps). Bisect for the largest feasible tau*.
             lo, hi = tau_lo, ceiling  # lo = robust/high-WNG, hi = sharp/low-WNG
             for _ in range(n_bisect):
                 mid = 0.5 * (lo + hi)
@@ -255,6 +257,12 @@ def _design_constant_di(
                 else:
                     hi = mid
             tau_star = lo
+        else:
+            # Safety net (unimodality is empirical, not proven): a non-monotone bracket would
+            # mislead the bisection, so grid-search the largest tau meeting the floor instead.
+            grid = np.linspace(tau_lo, ceiling, 4 * n_bisect)  # [4*n_bisect]
+            ok = [float(t) for t in grid if min_wng(t) >= floor]
+            tau_star = max(ok) if ok else tau_lo
 
     # Final per-bin solve at the shared tau*; flag any bin where MSCD is infeasible there.
     weights = np.zeros((m, n_f), dtype=np.complex128)  # [M, F]
