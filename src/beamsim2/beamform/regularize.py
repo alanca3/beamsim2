@@ -23,7 +23,11 @@ import numpy as np
 
 
 def white_noise_gain_db(w: np.ndarray, c: np.ndarray) -> float:
-    """WNG in dB for distortionless weights: ``10 log10(|c^H w|^2 / ||w||^2)``.
+    """WNG in dB: ``10 log10(|c^H w|^2 / ||w||^2)``.
+
+    Scale-invariant in ``w`` (a global complex factor cancels), so it equals the
+    *distortionless* WNG ``1 / ||w/(c^H w)||^2`` and is correct for non-normalized LS
+    weights as well as the distortionless MVDR/LCMV weights.
 
     Parameters
     ----------
@@ -157,3 +161,31 @@ def lambda_for_ls(robustness: float, a_matrix: np.ndarray) -> float:
     frac = frac_lo * (frac_hi / frac_lo) ** s
     scale = float(np.real(np.trace(a_matrix))) / a_matrix.shape[0]
     return frac * scale
+
+
+def ls_wng_lambda_grid(
+    a_matrix: np.ndarray, *, n_grid: int = 48, frac_lo: float = 1e-6, frac_hi: float = 1e4
+) -> np.ndarray:
+    """Log-spaced per-bin Tikhonov ``lambda`` grid for the LS WNG-floor search.
+
+    The LS WNG is *not* monotone in ``lambda`` (unlike loaded MVDR), so the floor is hit by
+    a grid search rather than bisection. The grid is scale-invariant: spaced over
+    ``[frac_lo, frac_hi] * trace(A)/M`` so it behaves the same across geometries and levels
+    (mirrors :func:`lambda_for_ls` scaling).
+
+    Parameters
+    ----------
+    a_matrix : np.ndarray
+        ``[M, M]`` the LS normal matrix ``conj(H) W H^T`` (for the trace scale).
+    n_grid : int
+        Number of grid points.
+    frac_lo, frac_hi : float
+        Fractional bounds of the grid (relative to ``trace(A)/M``).
+
+    Returns
+    -------
+    np.ndarray
+        ``[n_grid]`` float64, ascending.
+    """
+    scale = float(np.real(np.trace(a_matrix))) / a_matrix.shape[0]
+    return np.geomspace(frac_lo * scale, frac_hi * scale, n_grid)

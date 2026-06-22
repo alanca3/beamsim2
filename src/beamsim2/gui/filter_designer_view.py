@@ -279,7 +279,9 @@ class FilterDesignerTab(QWidget):
         # Achieved + target on the horizontal great-circle through the steer axis.
         angle, arc_uv = great_circle_arc(np.asarray(spec.steer_dir, float), 361)
         achieved = resample(self._result.steered_field[fi], obs, arc_uv, order)
-        target = build_target(spec, obs, self._ds.frequencies)
+        # Pass the dataset's speed of sound so the (now c-dependent) target phase matches design().
+        c_sound = float(self._ds.attrs.get("speed_of_sound", 343.2))
+        target = build_target(spec, obs, self._ds.frequencies, c_sound=c_sound)
         tgt_arc = resample(target.b_field[fi], obs, arc_uv, order)
 
         def norm_db(x):
