@@ -262,7 +262,10 @@ def test_filter_designer_constant_di_engine(qapp):
     tab._engine.setCurrentIndex([e for _, e in _ENGINES].index("constant_di"))
     result = design(tab._ds, tab._build_spec())
     tab._on_design_done(result)
-    assert "constant_gdi_db" in result.attrs
+    # The GUI selects Luo's proper directivity-index objective (Chunk 3b), so it reports the
+    # held-constant directivity index, not the cap-ratio GDI.
+    assert result.attrs["directivity_mode"] == "index"
+    assert "constant_di_db" in result.attrs
     tab.close()
 
 

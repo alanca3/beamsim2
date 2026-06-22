@@ -53,10 +53,18 @@ class TargetSpec:
     wng_floor_db : float
         The single robustness knob: white-noise-gain floor in dB (see ``regularize``).
     accept_halfangle_deg : float
-        Half-angle of the "accept" cap about the steering direction (constant-DI engine #2).
+        Half-angle of the "accept" cap about the steering direction. Used by the constant-DI /
+        max-directivity engines only in ``directivity_mode="region"`` (inert for ``"index"``).
     target_gdi_db : float | None
-        Desired constant generalized directivity index (dB) for ``engine="constant_di"``.
-        ``None`` -> use the maximum feasible value (the min over frequency of the ceiling).
+        Desired constant directivity level (dB) for ``engine="constant_di"`` —  the directivity
+        INDEX in ``directivity_mode="index"``, or the cap-ratio GDI in ``"region"``. ``None`` ->
+        use the maximum feasible value (the min over frequency of the ceiling).
+    directivity_mode : str
+        Objective for ``constant_di`` / ``max_directivity`` (Chunk 3b). ``"index"`` (recommended)
+        holds Luo's proper directivity INDEX constant (``A = c c^H``, ``R`` = whole sphere) — this
+        is what "constant directivity" means for a loudspeaker. ``"region"`` (default, kept for
+        back-compatibility) holds a front-cap-to-total power ratio constant, which is a *different*
+        objective and does not pin the directivity index. The GUI selects ``"index"``.
     engine : str
         ``"delay_sum" | "ls" | "mvdr" | "lcmv" | "max_directivity" | "constant_di"``.
     """
@@ -71,6 +79,7 @@ class TargetSpec:
     wng_floor_db: float = -6.0
     accept_halfangle_deg: float = 60.0
     target_gdi_db: float | None = None
+    directivity_mode: str = "region"
     engine: str = "ls"
 
 

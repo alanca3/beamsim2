@@ -18,14 +18,18 @@ from beamsim2.assembly.tensor import stacked_h_full
 from beamsim2.beamform.covariance import covariance, look_vector
 from beamsim2.beamform.forward import directivity_metrics, steered_field
 from beamsim2.beamform.regularize import (
+    floor_covariances,
     loaded_mvdr_weights,
     ls_wng_lambda_grid,
     max_white_noise_gain_db,
     solve_loading_for_wng,
+    solve_maxdir_loading_for_wng,
     white_noise_gain_db,
 )
 from beamsim2.beamform.targets import TargetSpec, build_target
 from beamsim2.beamform.weights import (
+    align_global_phase,
+    choose_shared_delay_complex,
     lcmv,
     ls_bricks,
     ls_pressure_match,
@@ -154,6 +158,131 @@ def _design_ls_coupled(
     return w, feasible, lam, tau
 
 
+def _constant_di_ar(h_f, w_quad, look, mode, target, eps_min):
+    """Build the (A, R, c) generalized-eigenproblem triple for one bin, eps_min-floored.
+
+    ``mode="index"`` (Luo's directivity INDEX, recommended): ``A = c c^H`` (rank-1), ``R`` =
+    whole-sphere covariance, so ``4*pi*(w^H A w)/(w^H R w)`` is the classical directivity factor.
+    ``mode="region"`` (the pre-3b objective): ``A`` = accept-cap covariance, ``R`` = reject
+    covariance — a front-to-region power ratio, NOT the directivity index (kept as an option).
+    """
+    c = look_vector(h_f, look)  # [M]
+    if mode == "index":
+        a = np.outer(c, np.conj(c))  # [M, M] proper DI: A = c c^H (rank-1, Hermitian PSD)
+        r = covariance(h_f, w_quad)  # [M, M] whole-sphere reject
+    else:  # "region"
+        a = covariance(h_f, w_quad, mask=target.accept_mask)  # [M, M]
+        r = covariance(h_f, w_quad, mask=target.reject_mask)  # [M, M]
+    a, r = floor_covariances(a, r, eps_min)
+    return a, r, c
+
+
+def _design_constant_di(
+    h, w_quad, look, freqs, spec, target, *, eps_min=1e-7, n_scan=40, n_bisect=44
+):
+    """Constant-directivity design: ONE shared tau*, honest WNG floor, cardinal-safe realization.
+
+    Two-pass (Luo MSCD): pass 1 finds each bin's directivity ceiling ``tau_max`` from the
+    generalized eigenproblem; the shared constant level ``tau* = 0.98 * min_f tau_max`` (capped by
+    ``target_gdi_db``). Pass 2 enforces an honest white-noise-gain floor by lowering the SINGLE
+    shared ``tau*`` — never a per-bin tau, which would break constant directivity. ``WNG(tau)`` for
+    the proper-DI objective is *unimodal* (``docs/Chunk3b_Findings.md``), so the floor search
+    bisects on the descending branch ``[min_f tau_peak, ceiling]`` where the min-over-bins WNG
+    rises as tau drops. If even the most-robust constant tau cannot meet the floor, the band is
+    flagged infeasible (directivity stays flat — graceful, never silent superdirective garbage).
+    The per-bin MSCD weights are then global-phase-aligned and de-ramped by one shared modeling
+    delay for realizable filters (both are per-frequency global factors -> cardinal-rule safe).
+
+    Returns ``(weights[M,F], feasible[F], wng_db[F], tau_star, shared_tau, level_db, band_ok)``.
+    """
+    m, n_f, _ = h.shape
+    mode = getattr(spec, "directivity_mode", "region")
+    a_list, r_list, c_list = [], [], []
+    for f in range(n_f):
+        a, r, c = _constant_di_ar(h[:, f, :], w_quad, look, mode, target, eps_min)
+        a_list.append(a)
+        r_list.append(r)
+        c_list.append(c)
+
+    # Pass 1 — per-bin directivity ceiling; feasible shared constant level (min over band).
+    tau_max = np.array(
+        [max_directivity(a_list[f], r_list[f], eps=0.0)[1] for f in range(n_f)]
+    )  # [F]
+    ceiling = float(np.min(tau_max)) * 0.98
+    if spec.target_gdi_db is not None:
+        cap = 10.0 ** (spec.target_gdi_db / 10.0)
+        if mode == "index":
+            cap /= 4.0 * np.pi  # target_gdi_db is the desired directivity INDEX in index mode
+        ceiling = min(ceiling, cap)
+
+    def mscd_wng(f, tau):
+        """(WNG_dB, w) for bin f at tau; (nan, None) if tau is infeasible there."""
+        try:
+            w = luo_mscd(a_list[f], r_list[f], c_list[f], tau)
+        except ValueError:
+            return np.nan, None
+        return white_noise_gain_db(w, c_list[f]), w
+
+    def min_wng(tau):
+        worst = np.inf
+        for f in range(n_f):
+            wng, w = mscd_wng(f, tau)
+            if w is None or not np.isfinite(wng):
+                return -np.inf
+            worst = min(worst, wng)
+        return worst
+
+    # Pass 2 — honest WNG floor on the shared tau* (unimodal-aware; one tau* => constant DI kept).
+    floor = spec.wng_floor_db
+    band_feasible = True
+    if min_wng(ceiling) >= floor:
+        tau_star = ceiling  # the ceiling already meets the floor
+    else:
+        tau_peak = np.empty(n_f)  # [F] per-bin WNG-hump location (lower bracket end)
+        scan = np.geomspace(1e-4 * ceiling, ceiling, n_scan)
+        for f in range(n_f):
+            vals = np.array([mscd_wng(f, t)[0] for t in scan])  # [n_scan]
+            tau_peak[f] = scan[int(np.nanargmax(vals))] if np.any(np.isfinite(vals)) else ceiling
+        tau_lo = float(np.clip(np.min(tau_peak), 1e-12, ceiling))
+        if min_wng(tau_lo) < floor:
+            tau_star, band_feasible = tau_lo, False  # floor unreachable at constant DI -> flag
+        else:
+            lo, hi = tau_lo, ceiling  # lo = robust/high-WNG, hi = sharp/low-WNG
+            for _ in range(n_bisect):
+                mid = 0.5 * (lo + hi)
+                if min_wng(mid) >= floor:
+                    lo = mid  # passes -> push tau up for more directivity
+                else:
+                    hi = mid
+            tau_star = lo
+
+    # Final per-bin solve at the shared tau*; flag any bin where MSCD is infeasible there.
+    weights = np.zeros((m, n_f), dtype=np.complex128)  # [M, F]
+    feasible = np.ones(n_f, dtype=bool)  # [F]
+    for f in range(n_f):
+        _, w = mscd_wng(f, tau_star)
+        if w is None:  # numeric edge exactly at tau_star -> nudge just inside the indefinite region
+            _, w = mscd_wng(f, tau_star * 0.999)
+        if w is None:
+            feasible[f] = False
+            continue
+        weights[:, f] = w
+
+    # Cardinal-safe realization: per-bin global-phase continuity + one shared modeling delay.
+    weights = align_global_phase(weights)  # [M, F]
+    shared_tau = choose_shared_delay_complex(weights, freqs)
+
+    wng_db = np.array(
+        [
+            white_noise_gain_db(weights[:, f], c_list[f]) if np.any(weights[:, f]) else -np.inf
+            for f in range(n_f)
+        ]
+    )  # [F]
+    feasible = feasible & band_feasible & (wng_db >= floor - 1.0)
+    level_db = 10.0 * np.log10((4.0 * np.pi if mode == "index" else 1.0) * tau_star)
+    return weights, feasible, wng_db, tau_star, shared_tau, level_db, band_feasible
+
+
 def design(ds, spec: TargetSpec) -> DesignResult:
     """Design per-driver weights for ``spec`` against the dataset ``ds`` (Stages P2-1/2).
 
@@ -177,6 +306,10 @@ def design(ds, spec: TargetSpec) -> DesignResult:
 
     target = build_target(spec, obs, ds.frequencies, c_sound=c_sound)
     look = target.look_idx
+    # Directivity objective for the constant_di / max_directivity engines (Chunk 3b): "index" is
+    # Luo's proper directivity index (A = c c^H), "region" is the pre-3b front-cap power ratio.
+    mode = getattr(spec, "directivity_mode", "region")
+    eps_min = 1e-7  # relative diagonal floor for the generalized eigenproblem / secular root
 
     weights = np.zeros((m, n_f), dtype=np.complex128)  # [M, F]
     wng_db = np.zeros(n_f)  # [F]
@@ -195,21 +328,25 @@ def design(ds, spec: TargetSpec) -> DesignResult:
             h, target.b_field, w_quad, ds.frequencies, look, spec.wng_floor_db
         )
 
-    # Constant-DI (engine #2) is a two-pass: pass 1 finds each frequency's directivity
-    # ceiling tau_max; the constant target tau* is the min over frequency (so it is feasible
-    # everywhere) capped by any requested target_gdi_db. Pass 2 runs MSCD at that fixed tau*.
-    tau_star: float | None = None
+    # Constant-DI (engine #2) is fully precomputed across all bins (Chunk 3b): one shared
+    # directivity level tau*, an honest WNG floor, eps_min well-posedness, and a cardinal-safe
+    # global-phase + shared-delay realization (see :func:`_design_constant_di`).
+    cd_weights: np.ndarray | None = None  # [M, F]
+    cd_feasible: np.ndarray | None = None  # [F]
+    cd_tau: float = 0.0
+    cd_shared_tau: float = 0.0
+    cd_level_db: float | None = None
+    cd_band_feasible: bool = True
     if spec.engine == "constant_di":
-        tau_maxes = []
-        for f in range(n_f):
-            a_mat = covariance(h[:, f, :], w_quad, mask=target.accept_mask)
-            r_mat = covariance(h[:, f, :], w_quad, mask=target.reject_mask)
-            _, tau_max = max_directivity(a_mat, r_mat)
-            tau_maxes.append(tau_max)
-        ceiling = float(np.min(tau_maxes)) * 0.98  # just below the min ceiling -> always feasible
-        if spec.target_gdi_db is not None:
-            ceiling = min(ceiling, 10.0 ** (spec.target_gdi_db / 10.0))
-        tau_star = ceiling
+        (
+            cd_weights,
+            cd_feasible,
+            _cd_wng,
+            cd_tau,
+            cd_shared_tau,
+            cd_level_db,
+            cd_band_feasible,
+        ) = _design_constant_di(h, w_quad, look, ds.frequencies, spec, target, eps_min=eps_min)
 
     for f in range(n_f):
         h_f = h[:, f, :]  # [M, N]
@@ -230,22 +367,26 @@ def design(ds, spec: TargetSpec) -> DesignResult:
             w_f = lcmv(h_f, look, target.null_idx, w_quad, eps)
             feasible[f] = feas
         elif spec.engine == "max_directivity":
-            a_mat = covariance(h_f, w_quad, mask=target.accept_mask)
-            r_mat = covariance(h_f, w_quad, mask=target.reject_mask)
-            w_f, _ = max_directivity(a_mat, r_mat, c=c)
+            if mode == "index":
+                a_mat = np.outer(c, np.conj(c))  # proper-DI: A = c c^H
+                r_mat = covariance(h_f, w_quad)  # whole-sphere reject
+            else:
+                a_mat = covariance(h_f, w_quad, mask=target.accept_mask)
+                r_mat = covariance(h_f, w_quad, mask=target.reject_mask)
+            # Honest WNG floor: the unloaded max-directivity beam is freely superdirective.
+            w_f, _eps, _wng, feas = solve_maxdir_loading_for_wng(
+                a_mat, r_mat, c, spec.wng_floor_db, eps_min=eps_min
+            )
+            feasible[f] = feas
         elif spec.engine == "constant_di":
-            a_mat = covariance(h_f, w_quad, mask=target.accept_mask)
-            r_mat = covariance(h_f, w_quad, mask=target.reject_mask)
-            try:
-                w_f = luo_mscd(a_mat, r_mat, c, tau_star)
-            except ValueError:
-                # tau* not feasible at this bin (edge of band) -> fall back to max directivity.
-                w_f, _ = max_directivity(a_mat, r_mat, c=c)
-                feasible[f] = False
+            w_f = cd_weights[:, f]  # from the all-bin constant-DI pre-solve (one shared tau*)
+            feasible[f] = cd_feasible[f]
         else:
             raise ValueError(f"Unknown engine {spec.engine!r}.")
         weights[:, f] = w_f
-        wng_db[f] = white_noise_gain_db(w_f, c)
+        # A degenerate / infeasible bin can return all-zero weights (e.g. a rank-deficient array
+        # collapsed to a single point); report WNG as -inf rather than dividing by ||w||^2 = 0.
+        wng_db[f] = white_noise_gain_db(w_f, c) if np.any(w_f) else -np.inf
 
     p = steered_field(h, weights)  # [F, N]
     metrics = directivity_metrics(p, obs, target.b_field, with_beamwidth=True)
@@ -260,8 +401,15 @@ def design(ds, spec: TargetSpec) -> DesignResult:
         "wng_floor_db": spec.wng_floor_db,
         "look_idx": look,
     }
-    if tau_star is not None:
-        attrs["constant_gdi_db"] = 10.0 * np.log10(tau_star)
+    if spec.engine == "constant_di":
+        attrs["directivity_mode"] = mode
+        attrs["constant_di_tau"] = cd_tau  # the shared generalized-eigenvalue level held constant
+        attrs["constant_di_shared_tau_s"] = cd_shared_tau  # shared modeling delay (s)
+        attrs["band_feasible"] = cd_band_feasible
+        if mode == "index":
+            attrs["constant_di_db"] = cd_level_db  # the held-constant directivity INDEX (dB)
+        else:
+            attrs["constant_gdi_db"] = cd_level_db  # the held-constant cap-ratio GDI (dB)
     if spec.engine == "ls":
         attrs["ls_tau_s"] = ls_tau  # shared modeling delay (s) used by the coupled solve
         attrs["ls_lambda"] = ls_lam.tolist()  # per-bin Tikhonov / WNG-floor loads

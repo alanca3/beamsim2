@@ -220,6 +220,9 @@ class FilterDesignerTab(QWidget):
             steer_dir=self._steer_dir(),
             wng_floor_db=float(self._wng.value()),
             accept_halfangle_deg=float(self._accept.value()),
+            # The constant_di / max_directivity engines use Luo's proper directivity INDEX
+            # (constant directivity in the loudspeaker sense); see docs/Chunk3b_Findings.md.
+            directivity_mode="index",
             engine=_ENGINES[self._engine.currentIndex()][1],
         )
 

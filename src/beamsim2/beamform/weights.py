@@ -233,6 +233,120 @@ def phase_roughness(w: np.ndarray, freqs: np.ndarray, tau: float) -> float:
     return worst
 
 
+def align_global_phase(w: np.ndarray) -> np.ndarray:
+    """Rotate each frequency column by ONE global phase for cross-frequency continuity.
+
+    Cardinal-rule safe: multiplying *all* drivers in a frequency bin by the same complex
+    unit ``exp(j theta_f)`` is a per-frequency global scale — it leaves ``|P(f, dir)|``, the
+    inter-driver phase, ``|w|``, the directivity, the beamwidth and the white-noise gain
+    *exactly* invariant (only the arbitrary per-bin global phase from the QCQP secular root /
+    eigenvector sign changes). Aligning these spurious global phases for continuity removes the
+    bulk of the apparent cross-frequency roughness of the constant-DI weights without touching
+    the beam (``docs/Chunk3b_Findings.md`` corrected premise #3). Each column ``f >= 1`` is
+    rotated to maximize ``Re<w[:, f-1], w[:, f]>`` (the 1-D Procrustes alignment to its
+    neighbour); column 0 is left as-is.
+
+    Parameters
+    ----------
+    w : np.ndarray
+        ``[M, F]`` complex128 per-driver weights.
+
+    Returns
+    -------
+    np.ndarray
+        ``[M, F]`` complex128 — the same weights with continuity-aligned per-bin global phase.
+    """
+    out = w.copy()  # [M, F]
+    for f in range(1, out.shape[1]):
+        ip = np.vdot(out[:, f - 1], out[:, f])  # <w_{f-1}, w_f> complex
+        if abs(ip) > 0.0:
+            out[:, f] *= np.exp(-1j * np.angle(ip))  # rotate to max Re<w_f, w_{f-1}>
+    return out
+
+
+def choose_shared_delay_complex(w: np.ndarray, freqs: np.ndarray) -> float:
+    """Pick ONE shared modeling delay ``tau`` (s) minimizing COMPLEX cross-frequency roughness.
+
+    Unlike :func:`phase_roughness` (unwrapped-phase second difference, ill-defined through
+    ``|w| = 0``), this scores a per-driver-RMS-normalized *complex* second difference, which is
+    well behaved for tapered heterogeneous arrays where some drivers fall to silence. The chosen
+    ``tau`` is a common latency applied identically to all drivers (cardinal-rule safe). Returns
+    ``0.0`` for ``F < 3`` (nothing to smooth).
+
+    Parameters
+    ----------
+    w : np.ndarray
+        ``[M, F]`` complex128 per-driver weights (typically already global-phase aligned).
+    freqs : np.ndarray
+        ``[F]`` float64 Hz.
+
+    Returns
+    -------
+    float
+        The shared modeling delay (s).
+    """
+    n_f = w.shape[1]
+    if n_f < 3:
+        return 0.0
+
+    def rough(tau: float) -> float:
+        ramp = np.exp(-1j * 2.0 * np.pi * freqs * tau)  # [F]
+        wt = w * ramp[None, :]  # [M, F] de-ramped
+        d2 = np.diff(wt, n=2, axis=1)  # [M, F-2] complex
+        scale = np.sqrt((np.abs(wt) ** 2).mean(axis=1)) + 1e-12  # [M] per-driver RMS
+        return float(np.max(np.abs(d2) / scale[:, None]))
+
+    span = 1.0 / (freqs[-1] - freqs[0])  # period scale of the band (s)
+    cand = np.linspace(-1.5 * span, 1.5 * span, 601)  # candidate shared delays (s)
+    return float(cand[int(np.argmin([rough(t) for t in cand]))])
+
+
+def magnitude_gated_phase_roughness(
+    w: np.ndarray, freqs: np.ndarray, tau: float, *, gate_frac: float = 0.10
+) -> float:
+    """Realizability roughness counting ONLY drivers that are acoustically active.
+
+    The raw :func:`phase_roughness` overcounts for tapered arrays: a driver whose weight decays
+    to near zero contributes meaningless phase noise (an essentially-silent filter is trivially
+    realizable). This variant ignores, per second-difference stencil, any driver whose ``|w|``
+    is below ``gate_frac`` of the overall peak across the three stencil bins, then reports the
+    worst remaining unwrapped-phase second difference (after removing one shared delay ``tau``).
+    This is the honest gate metric for the constant-DI engine (``docs/Chunk3b_Findings.md``).
+
+    Parameters
+    ----------
+    w : np.ndarray
+        ``[M, F]`` complex128 per-driver weights.
+    freqs : np.ndarray
+        ``[F]`` float64 Hz.
+    tau : float
+        Shared modeling delay to remove (s).
+    gate_frac : float
+        A driver is "on" at a stencil if its smallest of the three ``|w|`` exceeds
+        ``gate_frac * peak`` (default 0.10 = 10% of the peak weight magnitude).
+
+    Returns
+    -------
+    float
+        Worst on-driver max second difference of unwrapped phase (rad); ``0.0`` if ``F < 3``.
+    """
+    ramp = np.exp(-1j * 2.0 * np.pi * freqs * tau)  # [F]
+    wt = w * ramp[None, :]  # [M, F]
+    peak = float(np.abs(wt).max())
+    if peak == 0.0 or wt.shape[1] < 3:
+        return 0.0
+    worst = 0.0
+    for mm in range(wt.shape[0]):
+        amp = np.abs(wt[mm])  # [F]
+        phi = np.unwrap(np.angle(wt[mm]))  # [F]
+        d2 = np.abs(np.diff(phi, n=2))  # [F-2]
+        wmin = np.minimum.reduce([amp[:-2], amp[1:-1], amp[2:]])  # [F-2] min |w| over stencil
+        on = wmin > gate_frac * peak  # [F-2] acoustically-active stencils
+        if on.any():
+            worst = max(worst, float(np.max(d2[on])))
+    return worst
+
+
 def mvdr(H_f: np.ndarray, look_idx: int, weights: np.ndarray, eps: float) -> np.ndarray:
     """MVDR (minimum-variance distortionless response), loaded (Stage P2-1).
 
