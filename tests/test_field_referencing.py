@@ -59,6 +59,22 @@ def test_acoustic_center_makes_monopole_omni():
     assert _omni_ripple_db(out) < 1e-6, "acoustic-center monopole must be omni"
 
 
+def test_acoustic_center_phase_sign_is_pinned():
+    """Acoustic-center re-references PHASE to the source centre: an offset monopole's
+    referenced phase is direction-independent.
+
+    Guards the load-bearing ``−jk(r_n−r_obs)`` sign — the magnitude-only tests cannot
+    catch a flip because the ``(r_n/r_obs)`` factor flattens magnitude either way (a
+    flipped sign would DOUBLE the path phase instead of removing it).
+    """
+    H, obs, freqs, pos = _offset_monopole()
+    near_rel = np.angle(H / H[:, :1])  # near-field phase relative to direction 0 (wrap-safe)
+    assert np.max(np.abs(near_rel)) > 0.5, "fixture should have direction-varying near-field phase"
+    H_ac = acoustic_center_field(H, freqs, obs, pos, c=_C)
+    ac_rel = np.angle(H_ac / H_ac[:, :1])
+    assert float(np.max(np.abs(ac_rel))) < 1e-6, "acoustic-center phase not direction-flat (sign?)"
+
+
 def test_sh_extrapolation_makes_monopole_near_omni():
     """SH far-field extrapolation makes an offset monopole near-omni."""
     H, obs, freqs, pos = _offset_monopole()
