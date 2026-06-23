@@ -27,7 +27,9 @@ weights      Solver modes: delay-sum, regularized LS / pressure-matching, MVDR/L
              Luo MECD/MSCD constant-directivity.
 regularize   White-noise-gain-floor diagonal loading (the single robustness knob).
 forward      Achieved field + directivity metrics (reuses ``closed_loop``).
-design       Orchestrator: (RadiationDataset, TargetSpec) -> DesignResult.
+design       Engine dispatch: (RadiationDataset, TargetSpec) -> DesignResult.
+orchestrator Auto-Design (``engine="auto"``): a principled escalation ladder over the
+             well-posed engines that picks the one best meeting the target (Chunk 3c).
 realize      [DEFERRED, Stage P2-5] complex weights -> causal per-driver FIR/IIR.
 
 See ``docs/Phase 2 - Filter Solver.md`` (the gameplan) and ``docs/Research Phase 2.md``

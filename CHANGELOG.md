@@ -4,6 +4,54 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] — 2026-06-22 — Bug-Fix Chunk 3c: Auto-Design orchestrator
+
+Third sub-chunk of the beamforming/filter-designer rebuild (#8, `docs/Bug_Fix_Proposal.md`). A new
+`engine="auto"` lets the user pick a **target**, not an algorithm: the **Auto-Design** orchestrator
+(`beamform/orchestrator.py`) runs a target-conditioned escalation ladder over the well-posed engines
+built in 3a/3b, scores each on the target's **own** objective metric, picks the best feasible one,
+and **reports its choice and where the target is infeasible honestly** — never silently stacking
+incommensurable objectives. This is the principled realization of the user's "iterate through all
+algorithms until it converges" (proposal Open Question 1, confirmed at kickoff). Research-led and
+**empirically de-risked against the real `design()`** before any package change (diagnose → engine-
+wins-per-class map → synthesize); methodology, the measured engine-selection margins, and **three
+settled premises** are in `docs/Chunk3c_Findings.md`. Schema unchanged (no `schema_version` bump).
+
+### Added
+
+- **`engine="auto"` Auto-Design orchestrator (`beamform/orchestrator.py`).** Classifies the target
+  (`nulls` → hard-null; else `TargetSpec.objective`), runs a robust→aggressive candidate ladder
+  through the real `design()`, and selects the **optimizer of the class's own metric** among
+  candidates that meet the honest WNG floor (best-effort + `band_feasible=False` if none do). On the
+  real fixtures it picks the engine an expert would, by a decisive margin on that metric:
+  `shape` → **`ls`** (lowest shape error), `constant_directivity` → **`constant_di`** (flattest DI),
+  `nulls` → **`lcmv`** (deepest null), `max_directivity` → **`max_directivity`** (highest DI within
+  the floor). The choice is recorded honestly in `attrs` (`auto_class`, `auto_trace`, `auto_reason`,
+  `auto_prescreen`, `band_feasible`); the concrete engine used is reported as `attrs["engine"]`.
+- **`TargetSpec.objective`** (`"shape"` default · `"max_directivity"` · `"constant_directivity"`) —
+  the cross-frequency target *intent* that no per-frequency shape field encoded (a non-empty `nulls`
+  overrides to the null class). Ignored by every concrete engine, so it is fully back-compatible.
+- **Auto-Design gate** `tests/test_beamform_auto_design.py`: each scenario asserts the expert engine
+  is chosen **and** beats the runner-up on that target's own metric in the recorded trace (a
+  non-circular check of engine behavior, not orchestrator wiring), plus honest infeasibility flagging
+  and the cardinal-rule collapse/shared-ramp controls on the new auto path.
+- **GUI Auto-Design** (`gui/filter_designer_view.py`): "Auto-Design (pick best engine)" leads the
+  engine list (one click away) but is **opt-in** — Least-squares stays the active default, so the
+  default "Design" is one fast solve, not the auto ladder's up-to-4. Two pattern entries
+  ("Constant directivity", "Maximum directivity") carry the objective; the status line names the
+  engine Auto-Design **chose** (`Auto → ls`), warns when the result is best-effort, and exposes the
+  selection reason as a tooltip.
+
+### Notes
+
+- The orchestrator only **calls** `design()`; it never re-tunes an engine (3a/3b did that) and never
+  re-zeros/min-phases a driver — steering stays entirely in H's inter-driver phase (cardinal rule).
+- It forces `directivity_mode="index"` on the `constant_di`/`max_directivity` candidates regardless
+  of the caller, so the DI-objective engines optimize Luo's proper directivity index (the `"region"`
+  default would make `constant_di` lose its own class — an advisor-flagged silent-failure trap).
+- Per-band engine *blending* and multi-target scalarization (in-room/CEA2034 + DI + beamwidth) stay
+  deferred to 3d; ladder-trace visualization to 3e.
+
 ## [1.2.2] — 2026-06-22 — Bug-Fix Chunk 3b: constant-directivity hardening
 
 Second sub-chunk of the beamforming/filter-designer rebuild (#8, `docs/Bug_Fix_Proposal.md`).

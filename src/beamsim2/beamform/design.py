@@ -306,6 +306,14 @@ def design(ds, spec: TargetSpec) -> DesignResult:
     -------
     DesignResult
     """
+    if spec.engine == "auto":
+        # Auto-Design (Chunk 3c): a principled escalation ladder over the well-posed engines that
+        # picks the one best meeting the target and reports its choice honestly. Lazy import keeps
+        # the orchestrator <-> design() back-reference from being a circular import at module load.
+        from beamsim2.beamform.orchestrator import design_auto
+
+        return design_auto(ds, spec)
+
     h = stacked_h_full(ds)  # [M, F, N] complex128
     m, n_f, _ = h.shape
     obs = ds.directions
