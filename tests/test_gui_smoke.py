@@ -269,6 +269,32 @@ def test_filter_designer_constant_di_engine(qapp):
     tab.close()
 
 
+def test_filter_designer_multi_target(qapp):
+    """The Multi-target pattern (Chunk 3d) forces Auto-Design and runs end-to-end in the tab."""
+    from beamsim2.beamform.design import design
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import _MULTI_LABEL, _PATTERNS, FilterDesignerTab
+
+    state = AppState()
+    tab = FilterDesignerTab(state)
+    tab.load(_synthetic_dataset())
+    tab._pattern.setCurrentIndex([lbl for lbl, _, _ in _PATTERNS].index(_MULTI_LABEL))
+    # Selecting Multi-target locks the engine to Auto-Design and enables the objective controls.
+    assert tab._engine.currentText().startswith("Auto-Design")
+    assert not tab._engine.isEnabled()
+    assert tab._mt_group.isEnabled()
+
+    spec = tab._build_spec()
+    assert spec.objective == "multi" and spec.engine == "auto"
+    assert spec.target_di_db is not None and spec.target_inroom_slope_db_per_oct is not None
+
+    result = design(tab._ds, spec)
+    tab._on_design_done(result)
+    assert result.attrs["auto_class"] == "multi"
+    assert "multi:" in tab._metrics.text()  # the per-objective achieved-vs-target summary
+    tab.close()
+
+
 def test_results_balloon_view_loads(qapp):
     """_BalloonView.load() must not raise for a 14-direction dataset."""
     from beamsim2.gui.results_view import _BalloonView

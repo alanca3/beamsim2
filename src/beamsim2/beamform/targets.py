@@ -69,10 +69,31 @@ class TargetSpec:
         The *target class* the Auto-Design orchestrator optimizes for when
         ``engine == "auto"`` (Chunk 3c). One of ``"shape"`` (match the named pattern —
         the default), ``"max_directivity"`` (as directive as the array + robustness allow),
-        or ``"constant_directivity"`` (hold the directivity index flat across the band). A
-        non-empty ``nulls`` always overrides to the hard-null class regardless of
-        ``objective``. Ignored by every concrete (non-``"auto"``) engine, so adding it is
-        back-compatible. See :mod:`beamsim2.beamform.orchestrator`.
+        ``"constant_directivity"`` (hold the directivity index flat across the band), or
+        ``"multi"`` (Chunk 3d — jointly target directivity / beamwidth / in-room by a
+        scalarized weighted-sum search; see the ``target_*`` / ``objective_weights`` fields
+        below). For the single-objective classes a non-empty ``nulls`` always overrides to
+        the hard-null class; for ``"multi"`` ``nulls`` instead acts as a feasibility *gate*
+        (a deliberate divergence — multi keeps its scalarized objective and just discards
+        candidates that fail to null). Ignored by every concrete (non-``"auto"``) engine,
+        so adding it is back-compatible. See :mod:`beamsim2.beamform.orchestrator`.
+    target_di_db : float | None
+        Multi-target only (Chunk 3d): desired directivity INDEX (dB). ``None`` -> directivity
+        is not an active multi-objective. The search varies engine + ``target_gdi_db`` to
+        approach it.
+    target_beamwidth_deg : float | None
+        Multi-target only: desired -6 dB beamwidth (deg). ``None`` -> beamwidth is not an
+        active multi-objective. A genuinely semi-independent axis from DI (``docs/Chunk3d_
+        Findings.md``: at fixed DI the achievable beamwidth still spans ~15°).
+    target_inroom_slope_db_per_oct : float | None
+        Multi-target only: desired CEA-2034-A Estimated-In-Room (PIR/EIR) spectral slope in
+        dB/octave. ``None`` -> in-room is not an active multi-objective. The research-backed
+        "preferred" neutral value is ~ -1.0 dB/oct (Harman/Olive), flatter for very directive
+        speakers; the GUI defaults to -1.0.
+    objective_weights : dict[str, float] | None
+        Multi-target only: relative weights on the *normalized* per-objective deviations,
+        keyed ``"di"`` / ``"beamwidth"`` / ``"inroom"``. ``None`` -> every active objective
+        weighted equally. Sliding the weights traces a Pareto trade-off.
     engine : str
         ``"delay_sum" | "ls" | "mvdr" | "lcmv" | "max_directivity" | "constant_di" | "auto"``.
         ``"auto"`` dispatches to the Auto-Design orchestrator, which picks the engine that
@@ -91,6 +112,10 @@ class TargetSpec:
     target_gdi_db: float | None = None
     directivity_mode: str = "region"
     objective: str = "shape"
+    target_di_db: float | None = None
+    target_beamwidth_deg: float | None = None
+    target_inroom_slope_db_per_oct: float | None = None
+    objective_weights: dict[str, float] | None = None
     engine: str = "ls"
 
 

@@ -4,6 +4,56 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.4] — 2026-06-22 — Bug-Fix Chunk 3d: multi-target objectives
+
+Fourth sub-chunk of the beamforming/filter-designer rebuild (#8, `docs/Bug_Fix_Proposal.md`). A new
+`objective="multi"` (dispatched through `engine="auto"`) lets the user target **{directivity index,
+−6 dB beamwidth, in-room CEA-2034-A EIR slope} jointly** via a **scalarized weighted-sum** search
+over the existing engines + knobs — producing a *sensible Pareto trade-off* and an **honest
+per-objective achieved-vs-target report**. It is a principled *search + scoring* layer on top of the
+3a/3b/3c engines: it only **calls** `design()` and Chunk-2's `compute_cea2034`; it never re-tunes a
+solver and never re-zeros/min-phases a driver. Both flagged decisions were confirmed at kickoff
+(scalarized weighted-sum with hard constraints as feasibility gates; search over (engine, knobs), not
+a new joint solver). Research-led and **empirically de-risked against the real `design()`** before any
+package change (diagnose → conflict map → prototype → synthesize); the methodology, the measured
+conflict structure, the in-room target-slope research, and **five settled premises** (incl. the
+non-circular minimax reframe of the gate) are in `docs/Chunk3d_Findings.md`. Schema unchanged (no
+`schema_version` bump).
+
+### Added
+
+- **Multi-target Auto-Design (`beamform/orchestrator.py`, `design_multi`).** `objective="multi"`
+  enumerates a curated `_MULTI_LADDER` (`ls`×{cardioid, supercardioid, hypercardioid}, `delay_sum`,
+  `constant_di`×{gdi 10/12/14/None}, `max_directivity`; all index-mode, `mvdr` dropped as ≡ index
+  max-directivity) through the real `design()`, scores each candidate on a **weighted sum of
+  NORMALIZED per-objective deviations** (DI vs `target_di_db`, beamwidth vs `target_beamwidth_deg`,
+  in-room EIR slope vs `target_inroom_slope_db_per_oct`), gated by the honest WNG floor / any `nulls`
+  as lexicographically-prior feasibility constraints, and returns the best feasible candidate. The
+  choice is recorded honestly in `attrs` (`auto_class="multi"`, `multi_targets`, `multi_weights`,
+  `multi_norm`, `multi_trace`, `multi_achieved`, `auto_reason`, `auto_prescreen`, `band_feasible`).
+- **`TargetSpec` multi-target fields** — `objective="multi"` plus optional `target_di_db`,
+  `target_beamwidth_deg`, `target_inroom_slope_db_per_oct`, `objective_weights` (all default `None`,
+  fully back-compatible). Under `"multi"`, `nulls` is a feasibility **gate**, not a class override.
+- **V-MULTI gate** `tests/test_beamform_multi_target.py`: the load-bearing **non-circular minimax**
+  check (the balanced design's *worst* normalized deviation is lower than every single-objective
+  optimum's — a fact about the achieved fields, not the selector), the explicit 3c-style trade, the
+  end-to-end Pareto weight-trace, the honest-report shape, and the cardinal-rule collapse/shared-ramp
+  controls on the new path. (The kickoff's literal "beats the extremes on the combined score" line is
+  also reported, labeled as the trivial corollary.)
+- **GUI multi-target** (`gui/filter_designer_view.py`): a "Multi-target (DI/beamwidth/in-room)"
+  pattern that locks the engine to Auto-Design and exposes per-objective {use, target, weight}
+  controls (in-room slope defaulting to the research-backed −1 dB/oct); the status line appends the
+  per-objective achieved-vs-target summary.
+
+### Notes
+
+- **In-room target slope default = −1.0 dB/oct** (Harman/Olive "preferred" in-room, flatter for very
+  directive speakers). On a <1-octave band the EIR slope is largely a constant-directivity proxy; the
+  genuine multi-octave downtilt axis is documented in `docs/Chunk3d_Findings.md`.
+- The normalization scales (`_NORM = {di:3 dB, beamwidth:12°, inroom:1 dB/oct}`) are fixed physical
+  constants derived from each objective's measured span; the minimax trade holds structurally because
+  the objectives genuinely conflict (r(DI,BW)=−0.89), not because of the scale choice.
+
 ## [1.2.3] — 2026-06-22 — Bug-Fix Chunk 3c: Auto-Design orchestrator
 
 Third sub-chunk of the beamforming/filter-designer rebuild (#8, `docs/Bug_Fix_Proposal.md`). A new

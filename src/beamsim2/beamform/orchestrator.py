@@ -41,6 +41,7 @@ from beamsim2.assembly.tensor import stacked_h_full
 from beamsim2.beamform.covariance import look_vector
 from beamsim2.beamform.regularize import max_white_noise_gain_db
 from beamsim2.beamform.targets import TargetSpec, build_target
+from beamsim2.metrics.cea2034 import compute_cea2034
 
 # ---------------------------------------------------------------------------------------------
 # Per-class candidate ladders (robust -> aggressive). Every candidate is run through the real
@@ -78,9 +79,15 @@ _OMNI_PENALTY = 1.0e6  # added to a constant-DI score whose level is below the o
 def _classify(spec: TargetSpec) -> str:
     """Map a TargetSpec to its Auto-Design target class.
 
-    A non-empty ``nulls`` always dominates (a hard-null request is a null target regardless of
-    ``objective``); otherwise the explicit ``objective`` decides, defaulting to ``"shape"``.
+    ``objective == "multi"`` (Chunk 3d) is checked first: in the multi class a non-empty
+    ``nulls`` is a *feasibility gate*, NOT a class override (a deliberate divergence — multi
+    keeps its scalarized objective and discards candidates that fail to null). For the
+    single-objective classes a non-empty ``nulls`` dominates (a hard-null request is a null
+    target regardless of ``objective``); otherwise the explicit ``objective`` decides,
+    defaulting to ``"shape"``.
     """
+    if spec.objective == "multi":
+        return "multi"
     if spec.nulls:
         return "nulls"
     if spec.objective in ("constant_directivity", "max_directivity"):
@@ -241,6 +248,9 @@ def design_auto(ds, spec: TargetSpec):
     from beamsim2.beamform.design import design  # lazy: design.py dispatches into this module
 
     target_class = _classify(spec)
+    if target_class == "multi":
+        return design_multi(ds, spec)  # Chunk 3d: scalarized multi-objective (engine, knob) search
+
     obs = ds.directions
     c_sound = float(ds.attrs.get("speed_of_sound", 343.2))
     target = build_target(spec, obs, ds.frequencies, c_sound=c_sound)
@@ -268,6 +278,308 @@ def design_auto(ds, spec: TargetSpec):
     chosen_r.attrs["auto_class"] = target_class
     chosen_r.attrs["auto_trace"] = [ev for ev, _ in cands]
     chosen_r.attrs["auto_reason"] = _reason(chosen_ev, target_class, band_feasible)
+    chosen_r.attrs["auto_prescreen"] = prescreen
+    chosen_r.attrs["band_feasible"] = band_feasible
+    chosen_r.spec = spec  # echo the user's original auto request, not the overridden candidate
+    return chosen_r
+
+
+# =================================================================================================
+# Chunk 3d — Multi-target objectives (scalarized weighted-sum over a curated (engine, knob) search)
+# =================================================================================================
+#
+# A designer that targets {directivity index, -6 dB beamwidth, in-room (CEA-2034-A EIR) slope}
+# *jointly*. The combination rule (confirmed at the 3d kickoff) is a **scalarized weighted-sum of
+# NORMALIZED per-objective deviations**, with the hard constraints (the WNG floor, and any nulls)
+# kept as lexicographically-prior **feasibility gates**. The optimization variable is the
+# **(engine, knob)** combo — the engines + their tunable knobs (built in 3a/3b/3c) already span the
+# {DI, beamwidth, robustness} space, so multi-target is a principled *search + scoring* layer, NOT a
+# new joint solver: it only *calls* :func:`design` and scores the result. Steering stays entirely in
+# H's inter-driver phase (cardinal rule); the collapse-to-origin control still yields DI -> 0.
+#
+# Why these objectives / this conflict (``docs/Chunk3d_Findings.md``, measured on the real cap):
+#   - DI and the in-room *downtilt level* are tightly coupled (r=-0.95) -> the in-room axis used is
+#     the EIR *slope* (constant_di ~ -0.7 dB/oct vs max_directivity ~ -2.6 vs delay_sum ~ -3.9).
+#   - DI and -6 dB beamwidth conflict (r=-0.89) but only partially: at fixed DI the achievable
+#     beamwidth still spans ~15 deg (lever = engine/shape), so beamwidth is a genuine second axis.
+#   - The genuine 3-way conflict {high DI, wide beam, flat in-room} has no single winner, so the
+#     scalarized optimum genuinely TRADES (its worst normalized deviation is lower than every
+#     single-objective optimum's) -> a non-circular Pareto gate.
+
+# Fixed physical normalization scales (dB / deg / dB-per-octave). Chosen ONCE from the diagnostic's
+# measured metric SPANS so each objective's achievable deviation is ~3 normalized units (DI span
+# ~9 dB, beamwidth span ~35 deg, clean EIR-slope span ~3 dB/oct), i.e. no objective dominates the
+# unweighted sum. Hardcoded + reproducible (NOT per-run candidate spread, which would make the score
+# depend on the candidate set). The minimax trade holds *structurally* because the objectives
+# conflict (r(DI,BW)=-0.89), not because of the scale pick. See ``docs/Chunk3d_Findings.md``.
+_NORM: dict[str, float] = {"di": 3.0, "beamwidth": 12.0, "inroom": 1.0}
+
+# An unclosed main lobe (beamwidth_deg -> nan) is a hard miss, not a free pass: charge a large fixed
+# normalized deviation (~60 deg / 12) so a no-lobe candidate cannot win the beamwidth objective.
+_BW_NAN_DEV = 5.0
+
+# Curated multi-target candidate ladder (robust -> aggressive), spanning DI x beamwidth x in-room
+# space. ``mvdr`` is intentionally omitted: index-mode ``max_directivity`` is numerically identical
+# to loaded-MVDR (3c finding) and listing both would let a tie name "mvdr" over the canonical
+# "max_directivity". Index mode is forced on the DI engines (the 3c silent-failure trap: "region"
+# default optimizes a different cap-ratio objective and would not hold the directivity index).
+_MULTI_LADDER: list[tuple[str, dict]] = [
+    ("ls", {"mode": "preset", "preset": "cardioid"}),
+    ("ls", {"mode": "preset", "preset": "supercardioid"}),
+    ("ls", {"mode": "preset", "preset": "hypercardioid"}),
+    ("delay_sum", {"mode": "steering_only"}),
+    ("constant_di", {"mode": "steering_only", "directivity_mode": "index", "target_gdi_db": 10.0}),
+    ("constant_di", {"mode": "steering_only", "directivity_mode": "index", "target_gdi_db": 12.0}),
+    ("constant_di", {"mode": "steering_only", "directivity_mode": "index", "target_gdi_db": 14.0}),
+    ("constant_di", {"mode": "steering_only", "directivity_mode": "index", "target_gdi_db": None}),
+    ("max_directivity", {"mode": "steering_only", "directivity_mode": "index"}),
+]
+
+# JSON-friendly label per objective for the honest report.
+_OBJ_LABEL = {"di": "DI (dB)", "beamwidth": "beamwidth (deg)", "inroom": "in-room slope (dB/oct)"}
+
+
+def _multi_targets(spec: TargetSpec) -> dict[str, float]:
+    """The active multi-objectives = those whose target is set (non-``None``)."""
+    t: dict[str, float] = {}
+    if spec.target_di_db is not None:
+        t["di"] = float(spec.target_di_db)
+    if spec.target_beamwidth_deg is not None:
+        t["beamwidth"] = float(spec.target_beamwidth_deg)
+    if spec.target_inroom_slope_db_per_oct is not None:
+        t["inroom"] = float(spec.target_inroom_slope_db_per_oct)
+    return t
+
+
+def _multi_weights(spec: TargetSpec, targets: dict[str, float]) -> dict[str, float]:
+    """Resolve weights over the active objectives (default: equal; an all-zero set -> equal)."""
+    if spec.objective_weights:
+        w = {k: float(spec.objective_weights.get(k, 0.0)) for k in targets}
+        if any(v > 0.0 for v in w.values()):
+            return w
+    return {k: 1.0 for k in targets}  # default balanced (or rescue an all-zero weight set)
+
+
+def _eir_slope(steered_field, ds, steer_unit) -> float:
+    """In-room (CEA-2034-A Estimated-In-Room) spectral slope in dB/octave for a steered field.
+
+    Reuses Chunk-2's :func:`compute_cea2034` (the confirmed in-room approximation); the spinorama is
+    referenced to the BEAM axis (``steer_unit``), since that is on-axis for the listener. A single
+    bin cannot define a slope -> returns 0.0 (in-room then contributes nothing, honestly).
+    """
+    freqs = np.asarray(ds.frequencies, dtype=np.float64)
+    if freqs.size < 2:
+        return 0.0
+    cea = compute_cea2034(steered_field, freqs, ds.directions, np.asarray(steer_unit, float))
+    return float(np.polyfit(np.log2(freqs), cea["estimated_in_room"], 1)[0])
+
+
+def _multi_achieved(r, ds, steer_unit, null_idx: list[int], look_idx: int) -> dict:
+    """Achieved {DI, beamwidth, in-room slope, feasibility, null} for one candidate DesignResult.
+
+    Reuses the metrics ``design()`` already reported (``di_db``, ``beamwidth_deg``, feasible_mask)
+    plus the achieved-field EIR slope and null depth. ``bw_med`` is ``nan`` when no bin's main lobe
+    closes (handled by the scorer's nan-guard).
+    """
+    di = r.metrics["di_db"]  # [F]
+    bw = r.metrics["beamwidth_deg"]  # [F]
+    bw_med = float(np.nanmedian(bw)) if np.any(np.isfinite(bw)) else float("nan")
+    return {
+        "di_med": float(np.median(di)),
+        "di_ptp": float(np.ptp(di)),
+        "bw_med": bw_med,
+        "bw_nan": int(np.sum(~np.isfinite(bw))),
+        "eir_slope": _eir_slope(r.steered_field, ds, steer_unit),
+        "feas_frac": float(np.mean(r.metrics["feasible_mask"])),
+        "null_worst": _null_depth_worst(r, null_idx, look_idx),
+    }
+
+
+def _multi_devs(ach: dict, targets: dict[str, float]) -> dict[str, float]:
+    """Normalized per-objective deviations |achieved - target| / scale (active objectives only)."""
+    d: dict[str, float] = {}
+    if "di" in targets:
+        d["di"] = abs(ach["di_med"] - targets["di"]) / _NORM["di"]
+    if "beamwidth" in targets:
+        bw = ach["bw_med"]
+        d["beamwidth"] = (
+            _BW_NAN_DEV
+            if not np.isfinite(bw)
+            else abs(bw - targets["beamwidth"]) / _NORM["beamwidth"]
+        )
+    if "inroom" in targets:
+        d["inroom"] = abs(ach["eir_slope"] - targets["inroom"]) / _NORM["inroom"]
+    return d
+
+
+def _combined(devs: dict[str, float], weights: dict[str, float]) -> float:
+    """Scalarized score = weighted mean of the normalized deviations (lower is better)."""
+    keys = [k for k in devs if weights.get(k, 0.0) > 0.0]
+    wsum = sum(weights[k] for k in keys)
+    if not wsum:
+        return float("inf")
+    return sum(weights[k] * devs[k] for k in keys) / wsum
+
+
+def _null_feasible(ach: dict, spec: TargetSpec) -> bool:
+    """Multi-target null gate: if nulls were requested, the worst-bin null must be deep enough."""
+    if not spec.nulls:
+        return True
+    nw = ach["null_worst"]
+    return bool(np.isfinite(nw) and nw <= _NULL_DEPTH_DB)
+
+
+def _knob_summary(eng: str, knobs: dict) -> dict:
+    """JSON-friendly (engine, knobs) label for the honest trace."""
+    out = {"engine": eng}
+    if "preset" in knobs:
+        out["preset"] = knobs["preset"]
+    if knobs.get("target_gdi_db") is not None:
+        out["target_gdi_db"] = knobs["target_gdi_db"]
+    return out
+
+
+def _multi_achieved_report(ach: dict, targets: dict[str, float]) -> dict:
+    """Per-objective achieved-vs-target honesty report for ``attrs`` / the GUI."""
+    rep: dict[str, dict] = {}
+    if "di" in targets:
+        rep["di"] = {
+            "target": targets["di"],
+            "achieved": ach["di_med"],
+            "dev_norm": ach["devs"]["di"],
+        }
+    if "beamwidth" in targets:
+        rep["beamwidth"] = {
+            "target": targets["beamwidth"],
+            "achieved": ach["bw_med"],
+            "dev_norm": ach["devs"]["beamwidth"],
+        }
+    if "inroom" in targets:
+        rep["inroom"] = {
+            "target": targets["inroom"],
+            "achieved": ach["eir_slope"],
+            "dev_norm": ach["devs"]["inroom"],
+        }
+    return rep
+
+
+def _multi_reason(ach: dict, report: dict, weights: dict, band_feasible: bool) -> str:
+    """One-line, honest explanation of the multi-target choice for the GUI / audit trail."""
+    eng = ach["engine"]
+    parts = []
+    for k, lab in _OBJ_LABEL.items():
+        if k in report:
+            a = report[k]["achieved"]
+            t = report[k]["target"]
+            a_s = "n/a" if (k == "beamwidth" and not np.isfinite(a)) else f"{a:.1f}"
+            parts.append(f"{lab} {a_s}/{t:.1f}")
+    wtxt = ", ".join(f"{k}:{weights[k]:g}" for k in weights)
+    pre = (
+        ""
+        if band_feasible
+        else "best-effort (no candidate met the WNG floor / nulls across the band): "
+    )
+    return f"{pre}chose '{eng}' — best scalarized fit [{'; '.join(parts)}] at weights ({wtxt})."
+
+
+def design_multi(ds, spec: TargetSpec):
+    """Multi-target Auto-Design: scalarized (engine, knob) search over {DI, beamwidth, in-room}.
+
+    Runs the curated :data:`_MULTI_LADDER` through the real :func:`design`, scores each candidate's
+    achieved field on the scalarized weighted-sum of normalized per-objective deviations (gated by
+    the honest WNG floor / ``feasible_mask`` and any ``nulls``), and returns the best feasible
+    candidate with an honest report of what each objective achieved vs its target and which
+    (engine, knobs) was chosen. Reuses the 3c run->score->select skeleton; the only thing 3d
+    computes beyond the metrics ``design()`` already reports is the CEA-2034-A in-room slope (one
+    resample per candidate).
+
+    ``nulls`` under ``"multi"`` are a *best-effort* feasibility gate only: the multi ladder has no
+    hard-null engine (``lcmv`` is excluded), so a requested null usually cannot satisfy the gate and
+    the result degrades to best-effort (``band_feasible=False``, the reason naming nulls). For a
+    HARD null, use the dedicated null objective: a non-empty ``nulls`` with a non-``"multi"``
+    objective routes to ``lcmv`` via :func:`design_auto`.
+
+    Parameters
+    ----------
+    ds : RadiationDataset
+        Phase-1 output.
+    spec : TargetSpec
+        The user request with ``engine == "auto"`` and ``objective == "multi"``; at least one of
+        ``target_di_db`` / ``target_beamwidth_deg`` / ``target_inroom_slope_db_per_oct`` set.
+
+    Returns
+    -------
+    DesignResult
+        The chosen candidate's real ``design()`` output (numerically unchanged), with the honest
+        multi-target report grafted onto ``attrs``: ``engine`` (concrete engine used),
+        ``auto_selected``, ``auto_class="multi"``, ``multi_targets``, ``multi_weights``,
+        ``multi_norm``, ``multi_trace`` (every candidate's achieved metrics + deviations + combined
+        score), ``multi_achieved`` (per-objective achieved-vs-target), ``auto_reason``,
+        ``auto_prescreen``, ``band_feasible``. ``spec`` is the original ``engine="auto"`` request.
+    """
+    from beamsim2.beamform.design import design  # lazy: design.py dispatches into this module
+
+    targets = _multi_targets(spec)
+    if not targets:
+        raise ValueError(
+            "objective='multi' needs at least one of target_di_db / target_beamwidth_deg / "
+            "target_inroom_slope_db_per_oct."
+        )
+    weights = _multi_weights(spec, targets)
+
+    obs = ds.directions
+    c_sound = float(ds.attrs.get("speed_of_sound", 343.2))
+    steer = np.asarray(spec.steer_dir, dtype=np.float64)
+    steer = steer / np.linalg.norm(steer)
+    target = build_target(spec, obs, ds.frequencies, c_sound=c_sound)  # for look/null indices
+    null_idx, look_idx = target.null_idx, target.look_idx
+    prescreen = _wng_prescreen(ds, spec, look_idx)
+
+    cands: list[tuple[dict, object]] = []  # [(achieved+score dict, DesignResult)]
+    for eng, knobs in _MULTI_LADDER:
+        # objective="shape" on the candidate so the concrete engine never re-enters the auto path;
+        # concrete engines ignore `objective` anyway, but this keeps the dispatch unambiguous.
+        cand_spec = replace(spec, engine=eng, objective="shape", **knobs)
+        r = design(ds, cand_spec)
+        ach = _multi_achieved(r, ds, steer, null_idx, look_idx)
+        ach["devs"] = _multi_devs(ach, targets)
+        ach["combined"] = _combined(ach["devs"], weights)
+        ach["worst_dev"] = max(ach["devs"].values()) if ach["devs"] else float("inf")
+        ach["engine"] = r.attrs.get("engine", eng)
+        ach["knobs"] = _knob_summary(eng, knobs)
+        ach["feasible"] = bool(ach["feas_frac"] >= _FEAS_FRAC and _null_feasible(ach, spec))
+        cands.append((ach, r))
+
+    feasible = [(a, r) for a, r in cands if a["feasible"]]
+    pool = feasible if feasible else cands  # honest best-effort when nothing meets the gates
+    chosen_ach, chosen_r = min(pool, key=lambda ar: ar[0]["combined"])  # ladder order breaks ties
+    band_feasible = bool(chosen_ach["feasible"]) and bool(chosen_r.attrs.get("band_feasible", True))
+
+    report = _multi_achieved_report(chosen_ach, targets)
+    chosen_r.attrs["engine"] = chosen_ach["engine"]
+    chosen_r.attrs["auto_selected"] = True
+    chosen_r.attrs["auto_class"] = "multi"
+    chosen_r.attrs["multi_targets"] = targets
+    chosen_r.attrs["multi_weights"] = weights
+    chosen_r.attrs["multi_norm"] = dict(_NORM)
+    chosen_r.attrs["multi_trace"] = [
+        {
+            "knobs": a["knobs"],
+            "engine": a["engine"],
+            "di_med": a["di_med"],
+            "di_ptp": a["di_ptp"],
+            "bw_med": a["bw_med"],
+            "eir_slope": a["eir_slope"],
+            "feas_frac": a["feas_frac"],
+            "devs": a["devs"],
+            "combined": a["combined"],
+            "worst_dev": a["worst_dev"],
+            "feasible": a["feasible"],
+        }
+        for a, _ in cands
+    ]
+    chosen_r.attrs["multi_achieved"] = report
+    chosen_r.attrs["auto_reason"] = _multi_reason(chosen_ach, report, weights, band_feasible)
     chosen_r.attrs["auto_prescreen"] = prescreen
     chosen_r.attrs["band_feasible"] = band_feasible
     chosen_r.spec = spec  # echo the user's original auto request, not the overridden candidate
