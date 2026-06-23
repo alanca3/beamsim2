@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -312,12 +312,16 @@ class MainWindow(QMainWindow):
 
         self._undo_act = QAction("&Undo", self)
         self._undo_act.setShortcut(QKeySequence.StandardKey.Undo)
+        # ApplicationShortcut so ⌘Z fires even when a QDoubleSpinBox / QLineEdit has
+        # focus and would otherwise consume the key for its own per-widget undo.
+        self._undo_act.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self._undo_act.setEnabled(False)
         self._undo_act.triggered.connect(self._undo)
         edit_menu.addAction(self._undo_act)
 
         self._redo_act = QAction("&Redo", self)
         self._redo_act.setShortcut(QKeySequence.StandardKey.Redo)
+        self._redo_act.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self._redo_act.setEnabled(False)
         self._redo_act.triggered.connect(self._redo)
         edit_menu.addAction(self._redo_act)
@@ -417,6 +421,9 @@ class MainWindow(QMainWindow):
 
     def _undo(self) -> None:
         """Undo the last user action by restoring the previous snapshot."""
+        # Guard: ApplicationShortcut fires even during modal dialogs; skip there.
+        if QApplication.activeModalWidget() is not None:
+            return
         if not self._undo_stack:
             return
         if self._current_snapshot is not None:
@@ -427,6 +434,8 @@ class MainWindow(QMainWindow):
 
     def _redo(self) -> None:
         """Redo the last undone action."""
+        if QApplication.activeModalWidget() is not None:
+            return
         if not self._redo_stack:
             return
         if self._current_snapshot is not None:
