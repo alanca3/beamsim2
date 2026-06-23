@@ -4,7 +4,34 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — Bug-Fix Chunk 5a: filter-designer WNG normalization (RC1 keystone)
+## [Unreleased] — Bug-Fix Chunk 5b: filter-designer steer-to-front + engine guidance (RC2, RC3)
+
+Second sub-chunk of Chunk 5 (`docs/Chunk5_Gameplan.md`); GUI-only, no core/solver change. After 5a
+made the engines work, the cardioid still aimed the wrong way: the Filter Designer steered from world
+`+z` with no link to the loudspeaker front, so on the user's `+x`-facing opposed-driver box the beam
+pointed broadside to the driver pair (run2 `steer_dir=[0,0,1]`). And a "Cardioid" pattern could be
+paired with `delay_sum` (the omni corner) with no warning. Schema unchanged.
+
+### Fixed
+- **Steering measured from the loudspeaker front axis (RC2, `gui/filter_designer_view.py`).**
+  `_steer_dir()` now builds the steer in the dataset's reference frame
+  (`core.sphere.reference_frame` → front/right/up): `θ=0` aims straight out `reference_axis`, so the
+  default cardioid points where the speaker faces. `load(ds)` initializes `_front_axis` from
+  `ds.attrs["reference_axis"]`, resets the steer to on-axis, and shows the front axis in the panel
+  (labels: "Steer θ (off front axis)" / "Steer φ (around front)"). Display/intent only — geometry and
+  the phase origin are untouched (cardinal rule). Back-compatible: on `+z`-front datasets the reframed
+  steer reduces to the previous formula (existing fixtures unchanged).
+- **Delay-and-sum guidance (RC3).** A live note under the engine combo warns when `delay_sum` is
+  paired with any non-omni target: *"Delay-and-sum only steers — it cannot shape a cardioid or hold
+  directivity. Use Least-squares or Auto-Design."* (LS remains the default engine.)
+
+### Added
+- **GUI tests (`tests/test_gui_smoke.py`, 3):** steer default follows `reference_axis` (+z default,
+  +x when set; θ=0→front, θ=90⟂front, unit-norm); the delay-sum note logic; and an end-to-end
+  real-data check (front-steered LS "Cardioid" on the reconstructed run2 H → rear null < −12 dB
+  in-band; skips if `HDF5/run2` absent). Full GUI smoke suite green (39).
+
+## [1.4.1] — 2026-06-23 — Bug-Fix Chunk 5a: filter-designer WNG normalization (RC1 keystone)
 
 First sub-chunk of Chunk 5 (`docs/Chunk5_Gameplan.md`), the repair of the filter designer that
 "fails to maintain any semblance of directivity shaping" on a real two-opposed-driver loudspeaker
