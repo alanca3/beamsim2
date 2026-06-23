@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Optional
 import numpy as np
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -39,12 +40,17 @@ from PySide6.QtWidgets import (
 
 from beamsim2.geometry.assemble import DriverSpec
 from beamsim2.geometry.faces import (
+    FACE_NAMES,
+    FACE_NORMALS,
     FacePlacement,
     clamp_uv_to_face,
     classify_face,
     face_basis,
+    face_id_from_normal,
     face_local_to_spec,
     fits_on_face,
+    reconcile_placement,
+    reference_axis_indicator,
     world_to_face_uv,
 )
 from beamsim2.geometry.health import HealthReport
@@ -56,6 +62,13 @@ if TYPE_CHECKING:
 _DRIVER_COLORS = ["#e05252", "#5294e0", "#52c052", "#c09652"]
 _SELECT_COLORS = ["#ff8080", "#80b8ff", "#80ff80", "#ffcc80"]
 _FIT_FAIL_COLOR = "#ff4400"
+
+# Default radius (m) for a driver placed by clicking a face (LEAP-style instant placement).
+_DEFAULT_DRIVER_RADIUS = 0.040
+
+# Reference-axis (0° / virtual-mic) indicator colours, chosen to read against the dark bg.
+_REF_AXIS_COLOR = "#ffd166"  # warm yellow arrow
+_REF_MIC_COLOR = "#ef476f"  # pink microphone glyph
 
 # ── Lazy PyVista import ───────────────────────────────────────────────────────
 # PyVista requires a real OpenGL context; it cannot work under QT_QPA_PLATFORM=offscreen
@@ -180,9 +193,10 @@ class _DriverEditorCanvas(QWidget):
 
     Signals
     -------
-    driverAdded(face_id, radius)
-        Emitted when the user clicks an empty face in add mode.
-        The caller should open TSDialog and then call ``commit_driver``.
+    driverAdded(face_id, u, v, radius)
+        Emitted when the user clicks an empty face in add mode, carrying the
+        face-local ``(u, v)`` hit location (clamped to the face) so the driver is
+        placed *where the user clicked*, not always at the face centre (Bug #2).
     driverDeleted(index)
         Emitted when the user deletes a driver via context menu.
     driverEdited(index)
@@ -191,7 +205,7 @@ class _DriverEditorCanvas(QWidget):
         Emitted when a drag is released, carrying the new FacePlacement.
     """
 
-    driverAdded = Signal(int, float)  # face_id, default_radius
+    driverAdded = Signal(int, float, float, float)  # face_id, u, v, default_radius
     driverDeleted = Signal(int)  # driver index
     driverEdited = Signal(int)  # driver index
     driverMoved = Signal(int, object)  # index, FacePlacement
@@ -219,6 +233,7 @@ class _DriverEditorCanvas(QWidget):
         self._w: float = 0.12
         self._h: float = 0.10
         self._d: float = 0.08
+        self._ref_axis: tuple[float, float, float] = (0.0, 0.0, 1.0)  # 0° measurement axis
         self._mode: str = "select"  # "select" | "add"
         self._selected_idx: Optional[int] = None
         self._driver_actors: dict[int, object] = {}  # idx → vtkActor
@@ -258,8 +273,9 @@ class _DriverEditorCanvas(QWidget):
         h: float,
         d: float,
         selected_idx: Optional[int] = None,
+        reference_axis: Optional[tuple[float, float, float]] = None,
     ) -> None:
-        """Rebuild all actors: box shell + one disc per driver.
+        """Rebuild all actors: box shell + one disc per driver + reference-axis glyph.
 
         Parameters
         ----------
@@ -267,6 +283,9 @@ class _DriverEditorCanvas(QWidget):
         w, h, d : float
         selected_idx : int or None
             Index of the currently selected driver (highlighted).
+        reference_axis : tuple of 3 float or None
+            The 0° measurement axis (loudspeaker front).  ``None`` keeps the current one
+            (default +z).  Drawn as an arrow + virtual-microphone glyph (Bug #1).
         """
         if not _PV_OK:
             return
@@ -275,6 +294,8 @@ class _DriverEditorCanvas(QWidget):
         dims_changed = (w, h, d) != (self._w, self._h, self._d)
 
         self._w, self._h, self._d = w, h, d
+        if reference_axis is not None:
+            self._ref_axis = reference_axis
         self._placements = list(placements)
         self._selected_idx = selected_idx
         self._driver_actors.clear()
@@ -296,6 +317,9 @@ class _DriverEditorCanvas(QWidget):
         for i, dp in enumerate(placements):
             self._add_driver_actor(i, dp, selected=(i == selected_idx))
 
+        # ── reference-axis (0° / virtual-mic) indicator ───────────────────────
+        self._draw_reference_axis()
+
         # ── axis labels ──────────────────────────────────────────────────────
         self._plotter.add_axes(xlabel="x", ylabel="y", zlabel="z", interactive=False)
         if not self._camera_initialized or dims_changed:
@@ -306,6 +330,44 @@ class _DriverEditorCanvas(QWidget):
     def set_mode(self, mode: str) -> None:
         """Set interaction mode: 'select' or 'add'."""
         self._mode = mode
+
+    def _draw_reference_axis(self) -> None:
+        """Draw the reference-axis arrow + virtual-microphone glyph + label.
+
+        Reads :func:`reference_axis_indicator` (pure geometry) so the on-screen arrow,
+        mic glyph and the headless placement test stay in lock-step.  The arrow points
+        from the box centre along the measurement axis to a scaled stand-off where the
+        virtual microphone sits; the label conveys direction only (no false distance).
+        """
+        if not _PV_OK:
+            return
+        ind = reference_axis_indicator(self._ref_axis, self._w, self._h, self._d)
+        arrow = pv.Arrow(
+            start=ind.origin,
+            direction=ind.direction,
+            tip_length=0.18,
+            tip_radius=0.05,
+            shaft_radius=0.018,
+            scale=ind.length,
+        )
+        # pickable=False: the indicator is display/metadata only — it must never become a
+        # click target, or it would intercept add-driver / select / drag picks where the
+        # arrow pierces the box front (the cell-picker hits the nearest actor).
+        self._plotter.add_mesh(arrow, color=_REF_AXIS_COLOR, name="ref_axis_arrow", pickable=False)
+        mic = pv.Sphere(
+            radius=max(self._w, self._h, self._d) * 0.06,
+            center=ind.mic_pos,
+        )
+        self._plotter.add_mesh(mic, color=_REF_MIC_COLOR, name="ref_axis_mic", pickable=False)
+        self._plotter.add_point_labels(
+            [list(ind.mic_pos)],
+            ["0° / on-axis mic"],
+            font_size=12,
+            text_color="#ffffff",
+            shape=None,
+            show_points=False,
+            name="ref_axis_label",
+        )
 
     # ── Internal rendering ────────────────────────────────────────────────────
 
@@ -324,6 +386,7 @@ class _DriverEditorCanvas(QWidget):
             line_width=1.0,
             name="box_shell",
         )
+        self._draw_reference_axis()
         self._plotter.add_axes(xlabel="x", ylabel="y", zlabel="z", interactive=False)
         self._plotter.reset_camera()
         self._plotter.render()
@@ -501,7 +564,14 @@ class _DriverEditorCanvas(QWidget):
             # Hit the box face
             face_id = classify_face(point, normal, self._w, self._h, self._d)
             if self._mode == "add":
-                self.driverAdded.emit(face_id, 0.040)  # default r=40mm
+                # Place the driver where the user clicked (clamped so the disc fits the
+                # face), not always at the face centre (Bug #2: "it automatically adds it
+                # to the center of the face").
+                u, v = world_to_face_uv(face_id, point, self._w, self._h, self._d)
+                u, v = clamp_uv_to_face(
+                    face_id, u, v, _DEFAULT_DRIVER_RADIUS, self._w, self._h, self._d
+                )
+                self.driverAdded.emit(face_id, u, v, _DEFAULT_DRIVER_RADIUS)
             else:
                 # Deselect
                 self._selected_idx = None
@@ -656,12 +726,41 @@ class GeometryTab(QWidget):
         for sb in (self._w, self._h, self._d):
             sb.valueChanged.connect(self._on_dims_changed)
 
+        # Keep AppState's shared dims in sync from construction (the driver editors and
+        # the Drivers-list "Edit" reconcile read box_dims, not these widgets directly).
+        self._state.box_dims = (self._w.value(), self._h.value(), self._d.value())
+
+        # ── Measurement reference axis (0° / virtual-mic) ─────────────────────
+        meas_box = QGroupBox("Measurement")
+        meas_form = QFormLayout(meas_box)
+        self._ref_axis_combo = QComboBox()
+        for label in FACE_NAMES:
+            self._ref_axis_combo.addItem(label)
+        self._ref_axis_combo.setCurrentIndex(face_id_from_normal(self._state.reference_axis))
+        self._ref_axis_combo.setToolTip(
+            "The 0° on-axis measurement direction (the loudspeaker's front).\n"
+            "Shown in the 3-D view as the arrow + virtual-microphone glyph, and recorded\n"
+            "with the solve so the Results views agree with what you see here."
+        )
+        self._ref_axis_combo.currentIndexChanged.connect(self._on_ref_axis_changed)
+        meas_form.addRow("Reference (0°) axis:", self._ref_axis_combo)
+        left.addWidget(meas_box)
+
         # Add Driver toggle
         self._add_drv_btn = QPushButton("+ Add Driver")
         self._add_drv_btn.setCheckable(True)
         self._add_drv_btn.setToolTip("Click a box face in the 3-D view to place a driver there")
         self._add_drv_btn.toggled.connect(self._on_add_mode_toggled)
         left.addWidget(self._add_drv_btn)
+
+        # Interaction hint — discoverability for click / drag / right-click (Bug #2).
+        hint = QLabel(
+            "3-D editor:  click a face to add a driver  ·  drag a driver to move it  ·  "
+            "right-click a driver to Edit T/S or Delete."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888888; font-size: 11px;")
+        left.addWidget(hint)
 
         # Preview mesh button
         self._preview_btn = QPushButton("Preview mesh")
@@ -708,11 +807,18 @@ class GeometryTab(QWidget):
                 w=self._w.value(),
                 h=self._h.value(),
                 d=self._d.value(),
+                reference_axis=self._state.reference_axis,
             )
+
+    def _on_ref_axis_changed(self, index: int) -> None:
+        """Reference-axis combo changed → store on AppState and redraw the indicator."""
+        self._state.reference_axis = FACE_NORMALS[index]
+        self._refresh_canvas()
 
     def _on_dims_changed(self) -> None:
         """Box dimensions changed: re-derive all face-local drivers and re-render."""
         w, h, d = self._w.value(), self._h.value(), self._d.value()
+        self._state.box_dims = (w, h, d)
         for dp in self._state.drivers:
             if dp.face_placement is not None:
                 new_spec = face_local_to_spec(dp.face_placement, w, h, d)
@@ -733,11 +839,14 @@ class GeometryTab(QWidget):
         else:
             self._add_drv_btn.setText("+ Add Driver")
 
-    def _on_canvas_driver_added(self, face_id: int, default_radius: float) -> None:
+    def _on_canvas_driver_added(
+        self, face_id: int, u: float, v: float, default_radius: float
+    ) -> None:
         """User clicked an empty face in add mode → place driver instantly with defaults.
 
-        LEAP-style: the driver appears immediately at the face centre with a standard
-        woofer T/S.  The user can right-click → Edit T/S to tune parameters afterward.
+        LEAP-style: the driver appears immediately *where the user clicked* (face-local
+        ``(u, v)``, already clamped to the face) with a standard woofer T/S.  The user can
+        drag it to fine-tune, or right-click → Edit T/S to tune parameters afterward.
         No modal dialog on click — the previous stub-TSParams/TSDialog approach crashed
         because TSParams has no 'Le' field and required 'Sd' was missing.
         """
@@ -747,11 +856,11 @@ class GeometryTab(QWidget):
         # Deactivate add mode
         self._add_drv_btn.setChecked(False)
 
-        # Face-local placement at the face centre (u=v=0)
+        # Face-local placement at the clicked location (Bug #2: no longer forced to centre).
         fp = FacePlacement(
             face_id=face_id,
-            u=0.0,
-            v=0.0,
+            u=u,
+            v=v,
             radius=default_radius,
         )
         w, h, d = self._w.value(), self._h.value(), self._d.value()
@@ -792,11 +901,25 @@ class GeometryTab(QWidget):
         if dlg.exec():
             result = dlg.placement
             if result is not None:
-                # Preserve the face_placement; re-derive spec
-                result.face_placement = dp.face_placement
-                if result.face_placement is not None:
+                # Bug #3 (face-normal authority): reconcile the chosen orientation into a
+                # consistent spec+placement via the SAME helper the Drivers-list editor uses,
+                # so a re-orient on the canvas persists across editor reopen.
+                if dp.face_placement is not None:
                     w, h, d = self._w.value(), self._h.value(), self._d.value()
-                    result.spec = face_local_to_spec(result.face_placement, w, h, d)  # type: ignore[misc]
+                    spec, fp = reconcile_placement(
+                        result.spec.normal, dp.face_placement, result.spec.radius, w, h, d
+                    )
+                    result.spec = spec  # type: ignore[misc]
+                    result.face_placement = fp  # type: ignore[misc]
+                else:
+                    result.face_placement = None  # type: ignore[misc]
+                # Enforce id uniqueness against the OTHER drivers, exactly as the
+                # Drivers-list edit path does (a duplicate id otherwise fails the
+                # write-time guard at run-simulation; keep both edit paths consistent).
+                from beamsim2.core.driver_ids import make_unique_id
+
+                others = [d.driver_id for j, d in enumerate(self._state.drivers) if j != idx]
+                result.driver_id = make_unique_id(result.driver_id, others)  # type: ignore[misc]
                 self._state.drivers[idx] = result
                 self._refresh_canvas()
                 self.driversChanged.emit()

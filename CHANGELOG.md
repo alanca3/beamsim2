@@ -4,6 +4,60 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-06-22 — Bug-Fix Chunk 4: model-viewer UX & driver interaction (#1, #2, #3)
+
+Fourth chunk of the first-run bug-fix campaign (`docs/Bug_Fix_Proposal.md`), covering the three
+model-viewer / driver-interaction bugs (#1, #2, #3 from `First_Run_Bugs.txt`). All three are GUI /
+geometry fixes; none touches the solver, the H-tensor, or the phase origin (cardinal rule preserved,
+V-5 green). PyVista/VTK cannot run under offscreen CI, so the load-bearing logic was factored into
+pure, headless-testable functions (`geometry/faces.py`), with the interactive VTK path verified
+manually and via an off-screen PyVista API check. Findings, decisions, and the testing approach are in
+`docs/Chunk4_Findings.md`. Schema unchanged (no `schema_version` bump).
+
+### Fixed
+
+- **#3 — driver orientation no longer resets to +z.** `parameters_panel.TSDialog._prefill` now
+  restores the "Face normal" combo from `dp.spec.normal` (it previously never set the combo, so the
+  editor always re-defaulted to +z and OK-ing it silently re-zeroed the driver's true orientation).
+- **#3 — face-normal authority unified.** The two driver-edit paths (`DriversTab._edit_driver` and
+  `geometry_view.GeometryTab._on_canvas_driver_edited`) now share ONE rule —
+  `geometry.faces.reconcile_placement(chosen_normal, old_fp, radius, w, h, d) → (spec, face_placement)`
+  — so a re-orient persists identically wherever it was edited: same face keeps the position, a new
+  orientation moves the driver to that face (recentred, radius clamped to fit). `FacePlacement` stays
+  the single source of truth, so `spec` and `face_placement` can no longer silently disagree.
+- **#2 — drivers place where you click.** The canvas `driverAdded` signal now carries the clicked,
+  face-clamped `(u, v)`, so a new driver lands at the click location instead of always the face centre.
+
+### Added
+
+- **#1 — reference-axis (0°) + virtual-microphone indicator in the 3-D editor.** A new pure
+  `geometry.faces.reference_axis_indicator(axis, w, h, d) → AxisIndicator` computes the arrow + mic
+  placement; `_DriverEditorCanvas._draw_reference_axis` renders an arrow from the box centre along the
+  measurement axis to a scaled stand-off, with a microphone glyph and a `0° / on-axis mic` label, so
+  the box-vs-mic orientation is unambiguous from any camera angle. The label conveys direction only —
+  it deliberately claims no false distance.
+- **Settable reference axis, threaded end-to-end.** New `AppState.reference_axis` (default +z) with a
+  6-way "Reference (0°) axis" combo on the Geometry tab, threaded through
+  `SimulationTab.build_request → SimulationRequest.reference_axis` (already persisted as the dataset's
+  `reference_axis` root attr). This closes the Chunk-1 cross-cutting thread: the editor indicator, the
+  stored attr, and the Results On-axis/Balloon/Polar/CEA views now all agree on the loudspeaker front.
+- **`geometry.faces` helpers (Qt-free, CI-tested):** `FACE_NORMALS`, `face_id_from_normal`,
+  `reconcile_placement`, `AxisIndicator` + `reference_axis_indicator`; `AppState.box_dims` as the
+  shared dims source both driver editors read.
+- **Discovery hint** under the editor ("click a face to add · drag to move · right-click to Edit/Delete")
+  and seven headless tests in `tests/test_gui_smoke.py` (combo↔face_id invariant, prefill restore for
+  all six normals, reconcile same-/new-face behaviour incl. radius clamp, the edit→reopen persistence,
+  the indicator geometry rotating with the axis, and place-at-click `(u, v)`).
+
+### Notes
+
+- **PyVista is already a soft requirement** (in `[project].dependencies`); the Matplotlib fallback is
+  retained for headless / no-GL environments, so the kickoff's "make it a default dep" decision was
+  already satisfied — no `pyproject` change was needed.
+- **Reference axis is display/metadata only** — it never moves the geometry or the phase origin
+  (cardinal rule). It reuses `core.sphere.reference_frame` so the editor and every Results view share
+  one convention.
+
 ## [1.3.0] — 2026-06-22 — Bug-Fix Chunk 3 complete: filter-designer visualization (3e)
 
 Fifth and final sub-chunk of the beamforming/filter-designer rebuild (#8, `docs/Bug_Fix_Proposal.md`)

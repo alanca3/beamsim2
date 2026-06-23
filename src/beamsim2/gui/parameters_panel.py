@@ -36,6 +36,12 @@ from beamsim2.driver.inductance import LR2Ladder, PlainLe
 from beamsim2.driver.terminal import TerminalModel
 from beamsim2.driver.thiele_small import TSParams
 from beamsim2.geometry.assemble import DriverSpec
+from beamsim2.geometry.faces import (
+    FACE_NAMES,
+    FACE_NORMALS,
+    face_id_from_normal,
+    reconcile_placement,
+)
 from beamsim2.pipeline.run import (
     DriverPlacement,
     ResourceEstimate,
@@ -127,15 +133,10 @@ class TSDialog(QDialog):
         geo_form.addRow("Center z (m):", self._cz)
         self._radius = _spin(0.005, 0.5, 0.040, decimals=4)
         geo_form.addRow("Radius (m):", self._radius)
+        # Build the combo from the single face-normal source of truth so it stays
+        # index-aligned with face_id (FACE_NORMALS[i] is the normal of combo item i).
         self._normal_combo = QComboBox()
-        for label, _ in [
-            ("+z (top/front)", (0, 0, 1)),
-            ("-z (back)", (0, 0, -1)),
-            ("+x (right)", (1, 0, 0)),
-            ("-x (left)", (-1, 0, 0)),
-            ("+y (top)", (0, 1, 0)),
-            ("-y (bottom)", (0, -1, 0)),
-        ]:
+        for label in FACE_NAMES:
             self._normal_combo.addItem(label)
         geo_form.addRow("Face normal:", self._normal_combo)
         layout.addWidget(geo_box)
@@ -210,6 +211,10 @@ class TSDialog(QDialog):
         self._cy.setValue(dp.spec.center[1])
         self._cz.setValue(dp.spec.center[2])
         self._radius.setValue(dp.spec.radius)
+        # Bug #3: restore the orientation combo from the stored normal — otherwise the
+        # dialog always re-defaults to +z (index 0) and an edit silently re-zeroes the
+        # driver's true orientation.  Combo index == face_id (FACE_NORMALS order).
+        self._normal_combo.setCurrentIndex(face_id_from_normal(dp.spec.normal))
         if dp.terminal is not None:
             ts = dp.terminal.ts
             self._Re.setValue(ts.Re)
@@ -236,8 +241,7 @@ class TSDialog(QDialog):
             self._qts_label.setText("error")
 
     def _normal_from_combo(self) -> tuple[float, float, float]:
-        normals = [(0, 0, 1), (0, 0, -1), (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0)]
-        return normals[self._normal_combo.currentIndex()]
+        return FACE_NORMALS[self._normal_combo.currentIndex()]
 
     def _on_ok(self) -> None:
         driver_id = self._id_edit.text().strip() or "driver_0"
@@ -374,8 +378,19 @@ class DriversTab(QWidget):
         dlg = TSDialog(placement=dp, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.placement:
             result = dlg.placement
-            # Preserve face_placement from original (TSDialog edits T/S, not placement)
-            result.face_placement = dp.face_placement  # type: ignore[misc]
+            # Bug #3 (face-normal authority): for a face-placed driver, reconcile the
+            # chosen orientation into a consistent spec+placement (the SAME helper the
+            # canvas editor uses) so a re-orient persists across editor reopen.  Manual
+            # drivers (no face placement) keep the dialog's spec.normal directly.
+            if dp.face_placement is not None:
+                w, h, d = self._state.box_dims
+                spec, fp = reconcile_placement(
+                    result.spec.normal, dp.face_placement, result.spec.radius, w, h, d
+                )
+                result.spec = spec  # type: ignore[misc]
+                result.face_placement = fp  # type: ignore[misc]
+            else:
+                result.face_placement = None  # type: ignore[misc]
             # Enforce uniqueness against the OTHER drivers (exclude the one edited).
             others = [d.driver_id for j, d in enumerate(self._state.drivers) if j != index]
             result.driver_id = make_unique_id(result.driver_id, others)
@@ -626,6 +641,7 @@ class SimulationTab(QWidget):
             sphere_scheme=sphere_scheme,
             sphere_n_points=n_pts,
             sphere_radius=self._sphere_radius.value(),
+            reference_axis=state.reference_axis,
             config=state.config,
             output_h5=out_h5,
         )

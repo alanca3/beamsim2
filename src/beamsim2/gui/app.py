@@ -72,6 +72,19 @@ class AppState:
     result: Optional[SimulationResult] = None
     h5_path: Optional[Path] = None  # last opened or saved dataset
 
+    # Live box dimensions (x, y, z) in metres — the single dims source both driver
+    # editors read so a re-orient reconciles identically whether it came from the
+    # canvas right-click or the Drivers-list "Edit" button.  Mirrors the Geometry
+    # tab's spin-boxes (which remain the interactive truth) and defaults to them.
+    box_dims: tuple[float, float, float] = (0.12, 0.10, 0.08)
+
+    # Measurement / 0°-on-axis reference direction (loudspeaker front) in the global
+    # Cartesian frame.  Default +z.  Shown as the reference-axis + virtual-mic glyph in
+    # the 3-D editor (Bug #1) and threaded into SimulationRequest so the solved dataset's
+    # ``reference_axis`` attr — and every Results view — agrees with what the editor shows.
+    # Display/metadata only: never moves the geometry or phase origin (cardinal rule).
+    reference_axis: tuple[float, float, float] = (0.0, 0.0, 1.0)
+
 
 # ---------------------------------------------------------------------------
 # Background solve worker
