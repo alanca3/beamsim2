@@ -4,7 +4,69 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — Bug-Fix Chunk 5c: HDF5 atomic write + attr hardening (data-integrity)
+## [Unreleased] — App-Shell Chunk (project system + menu bar + undo/redo + view manager + GUI logging)
+
+Introduces the full application shell for BeamSimII. **This is the "App-Shell Chunk" from
+`docs/Bug_Fix_Proposal.md` §5 (items #4, #5, #6) — not to be confused with the prior
+filter-designer "Chunk 5a/b/c" entries below.** Adds `.bsim` project files, a five-menu bar
+(File / Edit / View / Settings / Help), snapshot-based undo/redo, a Preferences dialog for logging
+and NumCalc path, and unsaved-changes guards. No on-disk solve schema changes (HDF5
+`schema_version` unchanged); `.bsim` is a new, separate format at `project_version = 1`.
+
+### Added
+- **`.bsim` project file format (`src/beamsim2/io/project_io.py`)**: JSON document storing all
+  editable inputs (box, reference axis, drivers, simulation params, solver config, optional results
+  path). Handles `PlainLe`/`LR2Ladder` inductance discriminator, `box_volume=None`, tuple↔list
+  coercion. `project_version = 1`, separate from `schema_version`.
+- **Section-preserving settings layer (`src/beamsim2/backends/numcalc/config.py`)**: replaced the
+  clobbering `_write_numcalc_config` with `update_settings(section, mapping)` (read-merge-write),
+  plus `read_settings()`, `write_logging_prefs()`, `read_logging_prefs()`,
+  `push_recent_project()`, `read_recent_projects()`. Hand-rolled minimal TOML writer (str/bool/int/
+  float/list[str]); no new dependency; existing `resolve_numcalc_binary` public API unchanged.
+- **Preferences dialog (`src/beamsim2/gui/preferences_dialog.py`)**: logging group (enable toggle,
+  level combo, log-file picker) + NumCalc group (binary path + Browse), wired into the settings layer
+  and `configure_logging`.
+- **Full five-menu bar (`src/beamsim2/gui/app.py`)**: File (New ⌘N / Open ⌘O / Save ⌘S / Save As
+  ⇧⌘S / Recent Projects submenu / Open Dataset / Quit), Edit (Undo ⌘Z / Redo ⇧⌘Z with step counts),
+  View (Reset R / Perspective/Orthographic toggle / Front F / Back / Left / Right / Top / Bottom /
+  Isometric I), Settings (Preferences ⌘,), Help (About).
+- **Snapshot-based undo/redo** (cap 50): every dims, fillet, ref-axis, sim-param, or driver change
+  pushes a `.bsim`-format snapshot onto the undo stack. `_apply_state` restores from a snapshot
+  without triggering re-capture (`_applying` guard). Edit menu shows step counts.
+- **Unsaved-changes guard**: Save/Discard/Cancel dialog on New, Open Project, and Quit when the
+  project is dirty. Window title shows `ProjectName *` when unsaved changes exist.
+- **`get_project_params()/apply_project_params()` on GeometryTab and SimulationTab**: these gather
+  and distribute widget-authoritative values (spin-boxes, combos) that never round-trip through
+  `AppState`.
+- **View-manager camera methods on GeometryTab** (`reset_view`, `set_parallel_projection`,
+  `set_view`): delegate to pyvistaqt; no-op safely when `_PV_OK = False` (headless/CI).
+- **18-test pure-Python test suite (`tests/test_project_io.py`)**: round-trips a
+  `DriverPlacement` through `driver_to_dict`/`driver_from_dict` with both inductance kinds,
+  `box_volume=None`, multi-driver, schema-marker rejection.
+- **15-test pure-Python test suite (`tests/test_settings_merge.py`)**: section-preserving
+  `update_settings`, TOML writer correctness, recent-projects dedup/cap.
+- **8-test pure-Python test suite (`tests/test_logging_prefs.py`)**: enable/disable/re-enable
+  cycle via `configure_logging`.
+- **4-test Qt-offscreen test suite (`tests/test_gui_project_roundtrip.py`)**: gather/apply
+  round-trip, save→New→load round-trip, undo/redo single step, cardinal-rule guard (no H-tensor
+  mutation on load).
+
+### Fixed
+- **Duplicate undo entries per dims change** (`geometry_view.py`): `_on_dims_changed` previously
+  emitted both `geometryChanged` and `stateChanged`, both connected to `_on_state_changed`, creating
+  two undo stack entries per user edit. Removed redundant `stateChanged.emit()` from
+  `_on_dims_changed` (geometryChanged alone is sufficient since it is also connected to
+  `_on_state_changed`).
+- **Open-dataset HDF5 dialog no longer offers `*.bsim`** (`parameters_panel.py`): `.bsim` belongs
+  to the separate "Open Project" action.
+
+### Known issues
+- **⌘Z / ⇧⌘Z keyboard shortcuts for Undo/Redo do not fire** when a spin box or other
+  input widget has keyboard focus (macOS Qt shortcut routing). The `ApplicationShortcut`
+  context fix was applied but did not resolve it on this hardware; root cause is still
+  under investigation. Undo/Redo remain fully functional via Edit → Undo / Edit → Redo.
+
+## [1.4.3] — 2026-06-23 — Bug-Fix Chunk 5c: HDF5 atomic write + attr hardening (data-integrity)
 
 Third sub-chunk of Chunk 5 (`docs/Chunk5_Gameplan.md`); closes Chunk 5. Saves the dataset to HDF5
 from the GUI without corrupting or partially writing the file. Schema (`schema_version`) unchanged.
@@ -34,7 +96,7 @@ from the GUI without corrupting or partially writing the file. Schema (`schema_v
   atomicity — a write that raises mid-stream leaves the pre-existing file byte-identical and no `.tmp`
   file on disk; (3) lossless 2-driver round-trip with a rich attr set.
 
-## [Unreleased] — Bug-Fix Chunk 5b: filter-designer steer-to-front + engine guidance (RC2, RC3)
+## [1.4.2] — 2026-06-23 — Bug-Fix Chunk 5b: filter-designer steer-to-front + engine guidance (RC2, RC3)
 
 Second sub-chunk of Chunk 5 (`docs/Chunk5_Gameplan.md`); GUI-only, no core/solver change. After 5a
 made the engines work, the cardioid still aimed the wrong way: the Filter Designer steered from world

@@ -513,6 +513,7 @@ class SimulationTab(QWidget):
 
     estimateRequested = Signal()
     runRequested = Signal()
+    stateChanged = Signal()  # freq / sphere / output params changed (undo capture)
 
     def __init__(self, state, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -584,6 +585,12 @@ class SimulationTab(QWidget):
         self.monitor = RunMonitorWidget()
         layout.addWidget(self.monitor)
 
+        # Wire sim-param change signals → stateChanged (for undo capture)
+        for w in (self._f_lo, self._f_hi, self._sphere_radius):
+            w.editingFinished.connect(self._on_sim_params_changed)
+        for cb in (self._res_combo, self._sphere_combo):
+            cb.currentIndexChanged.connect(self._on_sim_params_changed)
+
     # ------------------------------------------------------------------
     # Public interface (called by MainWindow)
     # ------------------------------------------------------------------
@@ -650,8 +657,85 @@ class SimulationTab(QWidget):
     def _browse_output(self) -> None:
         from PySide6.QtWidgets import QFileDialog
 
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save HDF5 output", "", "HDF5 files (*.h5 *.bsim)"
-        )
+        path, _ = QFileDialog.getSaveFileName(self, "Save HDF5 output", "", "HDF5 files (*.h5)")
         if path:
             self._out_path.setText(path)
+
+    def _on_sim_params_changed(self) -> None:
+        """Emit stateChanged when any sim-parameter widget changes (undo capture)."""
+        self.stateChanged.emit()
+
+    # ------------------------------------------------------------------
+    # Project save / load helpers (called by MainWindow)
+    # ------------------------------------------------------------------
+
+    def get_project_params(self) -> dict:
+        """Return simulation-tab state as a flat dict for project save / undo snapshot.
+
+        Serialises semantic values (frac_oct, sphere_scheme + n_points), not combo
+        indices, so the dict survives preset-list reordering.
+
+        Returns
+        -------
+        dict
+            Keys: f_lo, f_hi, frac_oct, sphere_scheme, sphere_n_points,
+            sphere_radius, output_path.
+        """
+        _, _, frac_oct = _RESOLUTION_PRESETS[self._res_combo.currentIndex()]
+        _, sphere_scheme, sphere_n_points = _SPHERE_PRESETS[self._sphere_combo.currentIndex()]
+        return {
+            "f_lo": self._f_lo.value(),
+            "f_hi": self._f_hi.value(),
+            "frac_oct": frac_oct,
+            "sphere_scheme": sphere_scheme,
+            "sphere_n_points": sphere_n_points,
+            "sphere_radius": self._sphere_radius.value(),
+            "output_path": self._out_path.text().strip(),
+        }
+
+    def apply_project_params(self, d: dict) -> None:
+        """Restore simulation-tab widget values from a project-params dict.
+
+        Blocks widget signals during the write so that undo-capture and
+        run-enable-refresh slots do not fire mid-apply.
+
+        Parameters
+        ----------
+        d : dict
+            A dict produced by ``get_project_params()``.
+        """
+        spin_widgets = [self._f_lo, self._f_hi, self._sphere_radius]
+        combo_widgets = [self._res_combo, self._sphere_combo]
+        all_widgets = spin_widgets + combo_widgets
+        for w in all_widgets:
+            w.blockSignals(True)
+        try:
+            if "f_lo" in d:
+                self._f_lo.setValue(float(d["f_lo"]))
+            if "f_hi" in d:
+                self._f_hi.setValue(float(d["f_hi"]))
+
+            # Resolution: match by frac_oct value
+            if "frac_oct" in d:
+                fo = float(d["frac_oct"])
+                for i, (_, _, preset_fo) in enumerate(_RESOLUTION_PRESETS):
+                    if abs(preset_fo - fo) < 1e-9:
+                        self._res_combo.setCurrentIndex(i)
+                        break
+
+            # Sphere: match by (scheme, n_points)
+            if "sphere_scheme" in d and "sphere_n_points" in d:
+                target_scheme = str(d["sphere_scheme"])
+                target_n = int(d["sphere_n_points"])
+                for i, (_, scheme, npts) in enumerate(_SPHERE_PRESETS):
+                    if scheme == target_scheme and npts == target_n:
+                        self._sphere_combo.setCurrentIndex(i)
+                        break
+
+            if "sphere_radius" in d:
+                self._sphere_radius.setValue(float(d["sphere_radius"]))
+            if "output_path" in d:
+                self._out_path.setText(str(d.get("output_path", "")))
+        finally:
+            for w in all_widgets:
+                w.blockSignals(False)
