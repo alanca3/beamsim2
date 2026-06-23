@@ -39,6 +39,9 @@ from beamsim2.core.sh_transform import great_circle_arc, resample, safe_order_fo
 from beamsim2.gui.results_view import _MplCanvas
 
 # Pattern combo entries -> (mode, preset). "Cardioid order (slider)" enables the order slider.
+# The last two are Auto-Design *objectives* (not first-order shapes): with the Auto-Design engine
+# they route to the constant-DI / max-directivity target classes; with a concrete engine the mode
+# is a harmless steering target (the engine ignores the objective). See _PATTERN_OBJECTIVE.
 _PATTERNS = [
     ("Omni", "preset", "omni"),
     ("Cardioid", "preset", "cardioid"),
@@ -48,8 +51,19 @@ _PATTERNS = [
     ("Wide", "preset", "wide"),
     ("Narrow", "preset", "narrow"),
     ("Cardioid order (slider)", "cardioid_order", None),
+    ("Constant directivity", "steering_only", None),
+    ("Maximum directivity", "steering_only", None),
 ]
+# Pattern label -> Auto-Design objective (target class). Everything not listed is "shape".
+_PATTERN_OBJECTIVE = {
+    "Constant directivity": "constant_directivity",
+    "Maximum directivity": "max_directivity",
+}
+# Auto-Design leads the list (the user picks a target, not an algorithm) but is opt-in; the
+# concrete engines remain selectable, with Least-squares the active default (set in _build_controls
+# so the default Design is one fast solve). Auto reports which engine it chose (see below).
 _ENGINES = [
+    ("Auto-Design (pick best engine)", "auto"),
     ("Least-squares (shape)", "ls"),
     ("Delay-and-sum (steer)", "delay_sum"),
     ("MVDR (superdirective)", "mvdr"),
@@ -120,6 +134,10 @@ class FilterDesignerTab(QWidget):
         self._engine = QComboBox()
         for label, _ in _ENGINES:
             self._engine.addItem(label)
+        # Auto-Design is the first (most prominent) item, one click away, but Least-squares stays
+        # the active default so the default "Design" runs one fast solve, not the auto ladder's
+        # up-to-4 solves (the user opts into Auto-Design deliberately).
+        self._engine.setCurrentIndex([e for _, e in _ENGINES].index("ls"))
         form.addRow("Engine:", self._engine)
 
         self._accept = self._spin(5.0, 90.0, 60.0, " deg")
@@ -223,6 +241,9 @@ class FilterDesignerTab(QWidget):
             # The constant_di / max_directivity engines use Luo's proper directivity INDEX
             # (constant directivity in the loudspeaker sense); see docs/Chunk3b_Findings.md.
             directivity_mode="index",
+            # Auto-Design (engine="auto") reads `objective` (the target class) to pick the engine;
+            # concrete engines ignore it. The pattern label conveys the constant-/max-DI objectives.
+            objective=_PATTERN_OBJECTIVE.get(label, "shape"),
             engine=_ENGINES[self._engine.currentIndex()][1],
         )
 
@@ -261,10 +282,18 @@ class FilterDesignerTab(QWidget):
             extra = f"  constant DI = {result.attrs['constant_di_db']:.2f} dB"
         elif "constant_gdi_db" in result.attrs:  # directivity_mode="region" (cap-ratio GDI)
             extra = f"  constant GDI = {result.attrs['constant_gdi_db']:.2f} dB"
+        # Auto-Design: name the engine it CHOSE and surface its honest reason / infeasibility.
+        engine_label = result.attrs["engine"]
+        if result.attrs.get("auto_selected"):
+            engine_label = f"Auto → {result.attrs['engine']}"
+            if result.attrs.get("band_feasible", True) is False:
+                extra += "  ⚠ target not fully feasible (best-effort)"
         self._metrics.setText(
-            f"Engine: {result.attrs['engine']}  ·  DI ≈ {di:.1f} dB  ·  WNG ≈ {wng:.1f} dB  ·  "
+            f"Engine: {engine_label}  ·  DI ≈ {di:.1f} dB  ·  WNG ≈ {wng:.1f} dB  ·  "
             f"all bins feasible: {feas}{extra}"
         )
+        if result.attrs.get("auto_selected"):
+            self._metrics.setToolTip(result.attrs.get("auto_reason", ""))
         self._replot()
 
     def _on_design_failed(self, err: str) -> None:

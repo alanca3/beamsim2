@@ -65,8 +65,18 @@ class TargetSpec:
         is what "constant directivity" means for a loudspeaker. ``"region"`` (default, kept for
         back-compatibility) holds a front-cap-to-total power ratio constant, which is a *different*
         objective and does not pin the directivity index. The GUI selects ``"index"``.
+    objective : str
+        The *target class* the Auto-Design orchestrator optimizes for when
+        ``engine == "auto"`` (Chunk 3c). One of ``"shape"`` (match the named pattern —
+        the default), ``"max_directivity"`` (as directive as the array + robustness allow),
+        or ``"constant_directivity"`` (hold the directivity index flat across the band). A
+        non-empty ``nulls`` always overrides to the hard-null class regardless of
+        ``objective``. Ignored by every concrete (non-``"auto"``) engine, so adding it is
+        back-compatible. See :mod:`beamsim2.beamform.orchestrator`.
     engine : str
-        ``"delay_sum" | "ls" | "mvdr" | "lcmv" | "max_directivity" | "constant_di"``.
+        ``"delay_sum" | "ls" | "mvdr" | "lcmv" | "max_directivity" | "constant_di" | "auto"``.
+        ``"auto"`` dispatches to the Auto-Design orchestrator, which picks the engine that
+        best meets ``objective`` (and ``nulls``) and reports its choice honestly.
     """
 
     mode: str = "preset"
@@ -80,6 +90,7 @@ class TargetSpec:
     accept_halfangle_deg: float = 60.0
     target_gdi_db: float | None = None
     directivity_mode: str = "region"
+    objective: str = "shape"
     engine: str = "ls"
 
 
