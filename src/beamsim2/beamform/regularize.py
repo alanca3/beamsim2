@@ -2,12 +2,20 @@
 
 Regularization is mandatory: a handful of heterogeneous drivers gives superdirective
 blow-up at low frequency. We expose ONE user knob, a white-noise-gain (WNG) floor in
-dB. Under the distortionless constraint ``c^H w = 1``, ``WNG(w) = 1 / ||w||^2``, so a
-WNG floor is a weight-norm cap. The loaded weights
-``w(eps) = (R+eps I)^-1 c / (c^H (R+eps I)^-1 c)`` have ``WNG(eps)`` monotone increasing
-in eps, so we hit a target floor by 1-D bisection on ``log eps`` per frequency. A small
-``eps_min`` is always added before Cholesky; bins where the floor is unreachable are
-flagged (the directivity rolls off gracefully — never silent garbage).
+dB. WNG is the **dimensionless array gain against spatially-white sensor noise**,
+``WNG(w) = |c^H w|^2 / ( ||w||^2 * (||c||^2 / M) )`` — i.e. normalized by the average
+per-element power ``||c||^2/M`` so it does NOT depend on the absolute level of ``H``.
+The matched-field (delay-and-sum) corner reaches the ceiling ``WNG = M`` (``10 log10 M``
+dB); a requested floor above that is infeasible. This normalization is the Chunk-5a
+fix: the previous un-normalized ``|c^H w|^2/||w||^2`` measured absolute Pa^2, so for
+real BEM data (``|H| ~ 1e-3`` Pa) the ceiling sat tens of dB below any usable floor,
+making every bin infeasible and collapsing every adaptive engine to the omni corner.
+The loaded weights ``w(eps) = (R+eps I)^-1 c / (c^H (R+eps I)^-1 c)`` have ``WNG(eps)``
+monotone increasing in eps (the normalization is a per-frequency constant offset, so
+monotonicity is preserved), so we hit a target floor by 1-D bisection on ``log eps``
+per frequency. A small ``eps_min`` is always added before Cholesky; bins where the
+floor is unreachable are flagged (the directivity rolls off gracefully — never silent
+garbage).
 
 References
 ----------
@@ -23,11 +31,15 @@ import numpy as np
 
 
 def white_noise_gain_db(w: np.ndarray, c: np.ndarray) -> float:
-    """WNG in dB: ``10 log10(|c^H w|^2 / ||w||^2)``.
+    """WNG in dB: the dimensionless array gain ``10 log10(|c^H w|^2 / (||w||^2 * ||c||^2/M))``.
 
-    Scale-invariant in ``w`` (a global complex factor cancels), so it equals the
-    *distortionless* WNG ``1 / ||w/(c^H w)||^2`` and is correct for non-normalized LS
-    weights as well as the distortionless MVDR/LCMV weights.
+    Normalized by the average per-element power ``||c||^2/M`` (``M = len(c)``) so the metric
+    is **scale-invariant in the absolute level of H** (and, as before, in ``w``: a global
+    complex factor cancels). With this normalization the matched-field / delay-sum corner
+    ``w = c/M`` reaches the ceiling ``WNG = M`` (``10 log10 M`` dB) regardless of how loud
+    ``H`` is, so the user's WNG-floor knob (``-20 dB .. 10 log10 M``) has a consistent,
+    physically meaningful range across datasets. The un-normalized form
+    (``|c^H w|^2/||w||^2``) measured absolute Pa^2 and was unreachable for real BEM data.
 
     Parameters
     ----------
@@ -39,11 +51,16 @@ def white_noise_gain_db(w: np.ndarray, c: np.ndarray) -> float:
     Returns
     -------
     float
-        White-noise gain in dB.
+        White-noise gain in dB; ``-inf`` for a silent look direction (``||c|| = 0``) or
+        all-zero weights.
     """
+    m = c.shape[0]
+    cc = float(np.real(np.conj(c) @ c))  # ||c||^2 (avg element power = cc/M)
+    ww = float(np.real(np.conj(w) @ w))  # ||w||^2
+    if cc <= 0.0 or ww <= 0.0:
+        return float("-inf")
     num = float(np.abs(np.conj(c) @ w) ** 2)
-    den = float(np.real(np.conj(w) @ w))
-    return 10.0 * np.log10(num / den)
+    return 10.0 * np.log10(num / (ww * cc / m))
 
 
 def loaded_mvdr_weights(R: np.ndarray, c: np.ndarray, eps: float) -> np.ndarray:
@@ -70,11 +87,13 @@ def loaded_mvdr_weights(R: np.ndarray, c: np.ndarray, eps: float) -> np.ndarray:
 
 
 def max_white_noise_gain_db(c: np.ndarray) -> float:
-    """The WNG ceiling for the distortionless beamformer: ``10 log10(||c||^2)``.
+    """The WNG ceiling for the distortionless beamformer: ``10 log10(M)`` (``M = len(c)``).
 
-    Reached as ``eps -> inf`` (matched-field). A requested floor above this is infeasible.
+    With the per-element-power normalization in :func:`white_noise_gain_db`, the matched-field
+    corner ``w = c/M`` reaches the array-gain ceiling ``M`` regardless of the absolute level of
+    ``H``. Reached as ``eps -> inf`` (matched-field). A requested floor above this is infeasible.
     """
-    return 10.0 * np.log10(float(np.real(np.conj(c) @ c)))
+    return 10.0 * np.log10(float(c.shape[0]))
 
 
 def solve_loading_for_wng(
@@ -117,8 +136,9 @@ def solve_loading_for_wng(
     eps_lo, eps_hi = 1e-12 * scale, 1e6 * scale
 
     def wng_db(eps: float) -> float:
-        w = loaded_mvdr_weights(R, c, eps)
-        return 10.0 * np.log10(np.abs(np.conj(c) @ w) ** 2 / np.real(np.conj(w) @ w))
+        # Use the single normalized definition (Chunk-5a) so the bracket test against
+        # max_white_noise_gain_db compares like-for-like.
+        return white_noise_gain_db(loaded_mvdr_weights(R, c, eps), c)
 
     if wng_floor_db >= max_white_noise_gain_db(c) - tol_db:
         return eps_hi, False  # unreachable: clamp to max robustness, flag infeasible

@@ -4,6 +4,43 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Bug-Fix Chunk 5a: filter-designer WNG normalization (RC1 keystone)
+
+First sub-chunk of Chunk 5 (`docs/Chunk5_Gameplan.md`), the repair of the filter designer that
+"fails to maintain any semblance of directivity shaping" on a real two-opposed-driver loudspeaker
+(`First_Run_Bugs.txt` #8). Root cause RC1: the white-noise-gain (WNG) floor — the single robustness
+knob — was computed on the **absolute** matched-field power `‖c‖²` (Pa²) instead of the dimensionless
+array gain, so for real BEM data (`|H| ≈ 5e-3` Pa at 3 m) the WNG ceiling sat at −43…−29 dB, far
+below the user's −6/−20 dB floor. Every bin was flagged infeasible and every adaptive engine clamped
+to maximum loading → collapse to the omni / delay-sum corner (the exact `engine=delay_sum`, DI≈0,
+all-infeasible result in `HDF5/run2/`). CI never caught it because the synthetic `monopole_field`
+fixtures have `|H|≈1` (`‖c‖²≈M`), where the metric reads identically. Schema unchanged.
+
+### Fixed
+- **WNG metric normalized to the dimensionless array gain (`beamform/regularize.py`).**
+  `white_noise_gain_db` now divides by the average per-element power `‖c‖²/M`, so the matched-field
+  corner reaches the scale-free ceiling `10·log10(M)` regardless of the absolute level of `H`;
+  `max_white_noise_gain_db` returns `10·log10(M)`; the duplicated inline closure in
+  `solve_loading_for_wng` now calls the canonical function (advisor-flagged). `‖c‖²=0 → −inf` guard.
+  The change is a per-frequency constant offset, so MVDR/max-dir bisection monotonicity and the
+  constant-DI τ-search unimodality are preserved; no solver-internal logic changed. On the
+  reconstructed real run2 data this restores a cardioid in-band (DI 4.9 dB, rear null −26 dB @100 Hz)
+  and `auto` now correctly selects `ls` (was `delay_sum`); 81/81 bins feasible (was 0/81).
+
+### Added
+- **V-WNG-SCALE gate** `tests/test_beamform_wng_scale.py` (CI-safe): design `feasible_mask`/`di_db`/
+  `wng_db` invariant to a global `H` scale (the exact masked property), ceiling = `10·log10(M)`, and a
+  previously-unreachable −6 dB floor now met on faint (1e-3) data.
+- **Real-H reconstruction harness** `tests/_fixtures/reconstruct_run2.py` (local-only; `HDF5/` is
+  git-ignored): rebuilds the real 2-driver `H_full[2,81,2562]` from `run2/driver_{0,1}/H_full/*.frd`,
+  validated lossless (median rel err 4e-7) against the stored `driver_0/H_full`.
+
+### Notes
+- Existing beamform suite (54 tests) passes **unchanged** — no thresholds needed updating (monopole
+  fixtures have `‖c‖²≈M`, offset ≈ 0 dB). DI/target-error were always scale-invariant; only WNG broke.
+- Cardinal rule intact (no per-driver re-zero); V-5 stays green. RC2/RC3 (GUI steering + engine
+  guidance) land in 5b; the HDF5 save-error fix in 5c.
+
 ## [1.4.0] — 2026-06-22 — Bug-Fix Chunk 4: model-viewer UX & driver interaction (#1, #2, #3)
 
 Fourth chunk of the first-run bug-fix campaign (`docs/Bug_Fix_Proposal.md`), covering the three
