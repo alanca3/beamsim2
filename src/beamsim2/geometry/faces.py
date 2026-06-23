@@ -64,6 +64,11 @@ _NORMALS: list[Vec3] = [
     (0.0, -1.0, 0.0),
 ]
 
+# Public alias.  By construction ``FACE_NORMALS[i]`` is the outward normal of face
+# ``i`` and matches ``FACE_NAMES[i]`` — so a UI combo built from these is index-aligned
+# with ``face_id`` (relied on by the orientation round-trip in the driver editor).
+FACE_NORMALS: list[Vec3] = _NORMALS
+
 
 @dataclass
 class FacePlacement:
@@ -412,6 +417,172 @@ def classify_face(
         abs(y - 0),  # face 5 (-y)
     ]
     return int(np.argmin(distances))
+
+
+def face_id_from_normal(normal: Vec3) -> int:
+    """Return the face_id (0..5) whose outward normal best matches ``normal``.
+
+    The driver editor's "Face normal" combo is index-aligned with ``face_id`` (its
+    i-th entry is :data:`FACE_NORMALS` ``[i]``), so this is the inverse map used to
+    pre-fill the combo from a stored ``DriverSpec.normal`` and to detect when an
+    edit re-orients a driver onto a different box face.
+
+    Parameters
+    ----------
+    normal : Vec3
+        A (not necessarily unit) outward normal in world coordinates.
+
+    Returns
+    -------
+    int
+        face_id in 0..5 (the closest axis-aligned face by dot product).  A zero
+        vector falls back to face 0 (+z front).
+    """
+    n = np.asarray(normal, dtype=float).reshape(3)
+    nn = float(np.linalg.norm(n))
+    if nn < 1e-12:
+        return 0
+    n = n / nn
+    dots = [float(np.dot(n, np.asarray(nb, dtype=float))) for nb in _NORMALS]
+    return int(np.argmax(dots))
+
+
+def reconcile_placement(
+    chosen_normal: Vec3,
+    old_fp: Optional[FacePlacement],
+    radius: float,
+    w: float,
+    h: float,
+    d: float,
+) -> tuple["object", FacePlacement]:
+    """Reconcile a driver-editor orientation choice into a consistent (spec, placement).
+
+    The single rule shared by *both* editor paths (the Drivers-list "Edit" button and
+    the 3-D canvas right-click "Edit T/S"), so an edited orientation persists identically
+    no matter where it was edited (Bug #3 — face-normal authority).  ``FacePlacement`` is
+    the source of truth: ``DriverSpec`` is always derived from it, so the two can never
+    silently disagree (which is what made an edited orientation revert).
+
+    Behaviour
+    ---------
+    - **Same face** (chosen normal still points at the driver's current face): keep the
+      face-local ``(u, v)`` position, re-clamp it so a possibly-enlarged radius still fits.
+    - **New face** (the user picked a different orientation): move the driver to that face,
+      placed at the face centroid (``u = v = 0``), with the radius clamped to fit the new
+      (possibly smaller) face — so a re-orient never produces an off-face / overflowing disc.
+
+    Parameters
+    ----------
+    chosen_normal : Vec3
+        The outward normal selected in the editor's "Face normal" combo.
+    old_fp : FacePlacement or None
+        The driver's existing face placement (``None`` is treated as "no prior face").
+    radius : float
+        The driver piston radius (metres) from the editor.
+    w, h, d : float
+        Current box dimensions in metres.
+
+    Returns
+    -------
+    (spec, fp) : tuple[DriverSpec, FacePlacement]
+        A guaranteed-consistent pair: ``fp`` is the new face placement and ``spec`` is
+        ``face_local_to_spec(fp, w, h, d)`` (on-plane, within the face).
+    """
+    new_face = face_id_from_normal(chosen_normal)
+    b = face_basis(new_face, w, h, d)
+
+    if old_fp is not None and old_fp.face_id == new_face:
+        # Same face: keep position, re-clamp in case the radius changed.
+        u, v = clamp_uv_to_face(new_face, old_fp.u, old_fp.v, radius, w, h, d)
+        fp = FacePlacement(face_id=new_face, u=u, v=v, radius=radius)
+    else:
+        # Re-oriented onto a new face: centre it and shrink to fit the new face.
+        r = min(radius, b.half_u, b.half_v)
+        fp = FacePlacement(face_id=new_face, u=0.0, v=0.0, radius=r)
+
+    return face_local_to_spec(fp, w, h, d), fp
+
+
+# ---------------------------------------------------------------------------
+# Reference-axis (0° measurement / virtual-microphone) indicator
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AxisIndicator:
+    """Placement geometry for the 3-D editor's reference-axis / virtual-mic glyph.
+
+    Pure (numpy-only) so the placement can be CI-tested without an OpenGL context;
+    the GUI turns it into VTK actors in ``geometry_view``.  All points are world
+    coordinates in the box frame ``[0,w] × [0,h] × [0,d]``.
+
+    Parameters
+    ----------
+    origin : np.ndarray
+        ``[3]`` box geometric centre — where the axis arrow starts.
+    direction : np.ndarray
+        ``[3]`` unit reference axis (the loudspeaker's 0°/on-axis "front").
+    tip : np.ndarray
+        ``[3]`` arrow tip = ``origin + direction * length`` (the mic stand-off point).
+    mic_pos : np.ndarray
+        ``[3]`` centre of the virtual-microphone glyph (== ``tip``).
+    length : float
+        Arrow length in metres (a view-scaled stand-off, NOT the true mic distance).
+    """
+
+    origin: np.ndarray
+    direction: np.ndarray
+    tip: np.ndarray
+    mic_pos: np.ndarray
+    length: float
+
+
+def reference_axis_indicator(
+    axis: Vec3,
+    w: float,
+    h: float,
+    d: float,
+    standoff_factor: float = 1.6,
+) -> AxisIndicator:
+    """Compute the reference-axis arrow + virtual-mic placement for the 3-D editor.
+
+    Answers Bug #1 ("no way of telling which axis is the 0° measurement axis"): the
+    arrow points from the box centre along the measurement axis, with a microphone
+    glyph at its tip, so the box-vs-mic orientation is unambiguous from any camera angle.
+
+    The arrow length is a *view-scaled* stand-off proportional to the box size (so the
+    glyph stays visible for any enclosure); it deliberately does NOT encode the true
+    observation distance — the on-screen label conveys direction only.
+
+    Parameters
+    ----------
+    axis : Vec3
+        The measurement / reference axis (need not be unit; ``(0,0,0)`` falls back to +z).
+    w, h, d : float
+        Box dimensions in metres.
+    standoff_factor : float, optional
+        Arrow length as a multiple of the box's largest dimension (default 1.6).
+
+    Returns
+    -------
+    AxisIndicator
+        World-space placement of the arrow and microphone glyph.
+    """
+    # Reuse the canonical reference frame so the zero-axis fallback (+z) and
+    # normalisation match every Results view (core.sphere.reference_frame).
+    from beamsim2.core.sphere import reference_frame
+
+    front, _right, _up = reference_frame(axis)  # front = unit reference axis
+    origin = np.array([w / 2.0, h / 2.0, d / 2.0], dtype=float)
+    length = float(standoff_factor * max(w, h, d))
+    tip = origin + front * length
+    return AxisIndicator(
+        origin=origin,
+        direction=front,
+        tip=tip,
+        mic_pos=tip,
+        length=length,
+    )
 
 
 # ---------------------------------------------------------------------------

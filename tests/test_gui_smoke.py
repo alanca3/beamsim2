@@ -507,6 +507,331 @@ def test_results_di_map_view_loads(qapp):
 
 
 # ---------------------------------------------------------------------------
+# Chunk 4: model-viewer UX (#1 reference-axis indicator, #2 place-at-click,
+# #3 orientation round-trip & face-normal authority).  PyVista can't run under
+# offscreen Qt, so these test the GL-free logic: the orientation round-trip, the
+# shared placement-reconcile rule, and the pure indicator-placement geometry.
+# ---------------------------------------------------------------------------
+
+
+def test_face_normal_combo_invariant(qapp):
+    """The driver editor's 'Face normal' combo is index-aligned with face_id.
+
+    The whole #3 fix (mapping a stored normal back to a combo index, and detecting a
+    re-orient onto a new face) rests on: combo item i == FACE_NORMALS[i] == the outward
+    normal of face_id i == the inverse map face_id_from_normal.  If anyone reorders the
+    combo or the normal table, this breaks silently — so assert it.
+    """
+    import numpy as np
+
+    from beamsim2.geometry.faces import FACE_NAMES, FACE_NORMALS, face_basis, face_id_from_normal
+    from beamsim2.gui.parameters_panel import TSDialog
+
+    dlg = TSDialog()
+    assert dlg._normal_combo.count() == len(FACE_NORMALS) == len(FACE_NAMES) == 6
+    for i in range(6):
+        dlg._normal_combo.setCurrentIndex(i)
+        assert np.allclose(dlg._normal_from_combo(), FACE_NORMALS[i])
+        assert np.allclose(face_basis(i, 0.12, 0.10, 0.08).normal, FACE_NORMALS[i])
+        assert face_id_from_normal(FACE_NORMALS[i]) == i
+    dlg.close()
+
+
+def test_ts_dialog_prefill_restores_orientation(qapp):
+    """#3 (the reported bug): _prefill must set the combo from dp.spec.normal, not +z.
+
+    Before the fix _prefill never touched the combo, so it always showed index 0 (+z) and
+    OK-ing the dialog silently re-zeroed the driver's true orientation.
+    """
+    import numpy as np
+
+    from beamsim2.driver.terminal import default_terminal_model
+    from beamsim2.geometry.assemble import DriverSpec
+    from beamsim2.geometry.faces import FACE_NORMALS
+    from beamsim2.gui.parameters_panel import TSDialog
+    from beamsim2.pipeline.run import DriverPlacement
+
+    for i, normal in enumerate(FACE_NORMALS):
+        dp = DriverPlacement(
+            spec=DriverSpec(center=(0.06, 0.05, 0.08), normal=normal, radius=0.03),
+            terminal=default_terminal_model("d"),
+            driver_id="d",
+        )
+        dlg = TSDialog(placement=dp)
+        assert dlg._normal_combo.currentIndex() == i  # combo shows the true orientation
+        assert np.allclose(dlg._normal_from_combo(), normal)
+        dlg.close()
+
+
+def test_reconcile_placement_same_and_new_face():
+    """The shared reconcile rule: keep position on the same face; recentre+clamp on a new one."""
+    import numpy as np
+
+    from beamsim2.geometry.faces import (
+        FacePlacement,
+        face_id_from_normal,
+        fits_on_face,
+        reconcile_placement,
+    )
+
+    w, h, d = 0.12, 0.10, 0.08  # +z face half-extents (0.06, 0.05); +x face (0.05, 0.04)
+
+    # Same face (+z stays +z): position preserved, normal unchanged.
+    fp0 = FacePlacement(face_id=0, u=0.02, v=-0.01, radius=0.03)
+    spec, fp = reconcile_placement((0.0, 0.0, 1.0), fp0, 0.03, w, h, d)
+    assert fp.face_id == 0 and (fp.u, fp.v) == (0.02, -0.01)
+    assert np.allclose(spec.normal, (0.0, 0.0, 1.0))
+
+    # Same face but an enlarged radius forces the position to re-clamp inward (exercise the
+    # same-face clamp branch): +z half_u = 0.06, so a 0.05 m radius at u = 0.055 -> u = 0.01.
+    fp_grow = FacePlacement(face_id=0, u=0.055, v=0.0, radius=0.03)
+    _, fp_c = reconcile_placement((0.0, 0.0, 1.0), fp_grow, 0.05, w, h, d)
+    assert fp_c.face_id == 0 and fp_c.radius == 0.05
+    assert np.isclose(fp_c.u, 0.01) and fits_on_face(fp_c, w, h, d)  # re-clamped from 0.055
+
+    # Re-orient onto a new (+x) face: recentre to the face centroid and clamp radius to fit.
+    fp_big = FacePlacement(face_id=0, u=0.0, v=0.0, radius=0.045)  # 0.045 > +x half_v (0.04)
+    spec2, fp2 = reconcile_placement((1.0, 0.0, 0.0), fp_big, 0.045, w, h, d)
+    assert fp2.face_id == face_id_from_normal((1.0, 0.0, 0.0)) == 2
+    assert (fp2.u, fp2.v) == (0.0, 0.0)
+    assert fp2.radius == 0.04  # clamped to min(half_u, half_v) of the new face
+    assert fits_on_face(fp2, w, h, d)
+    assert np.allclose(spec2.normal, (1.0, 0.0, 0.0))
+
+
+def test_drivers_tab_edit_reorients_and_persists(qapp, monkeypatch):
+    """#3 end-to-end: editing a face-placed driver's orientation moves it AND survives reopen.
+
+    The discriminating test the prefill round-trip alone can't catch: a face-placed driver's
+    normal is otherwise re-derived from its (unchanged) face_placement, so a combo change would
+    revert.  Drives the real DriversTab.edit path with a stubbed dialog, then reopens the REAL
+    dialog and asserts the combo shows the persisted (+x) orientation.
+    """
+    import numpy as np
+    from PySide6.QtWidgets import QDialog
+
+    from beamsim2.driver.terminal import default_terminal_model
+    from beamsim2.geometry.assemble import DriverSpec
+    from beamsim2.geometry.faces import FacePlacement, face_id_from_normal, face_local_to_spec
+    from beamsim2.gui import parameters_panel as pp
+    from beamsim2.gui.app import AppState
+    from beamsim2.pipeline.run import DriverPlacement
+
+    state = AppState()
+    state.box_dims = (0.12, 0.10, 0.08)
+    fp = FacePlacement(face_id=0, u=0.01, v=0.0, radius=0.03)  # on the +z face
+    dp = DriverPlacement(
+        spec=face_local_to_spec(fp, *state.box_dims),
+        terminal=default_terminal_model("d0"),
+        driver_id="d0",
+        face_placement=fp,
+    )
+    state.drivers.append(dp)
+    tab = pp.DriversTab(state)
+    real_ts_dialog = pp.TSDialog  # keep the real class for the reopen check
+
+    class _StubDialog:
+        """Stand-in for TSDialog: returns Accepted with the orientation flipped to +x."""
+
+        def __init__(self, placement=None, parent=None):
+            self._dp = placement
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        @property
+        def placement(self):
+            old = self._dp
+            new_spec = DriverSpec(center=old.spec.center, normal=(1.0, 0.0, 0.0), radius=0.03)
+            return DriverPlacement(
+                spec=new_spec,
+                terminal=old.terminal,
+                driver_id=old.driver_id,
+                face_placement=old.face_placement,
+            )
+
+    monkeypatch.setattr(pp, "TSDialog", _StubDialog)
+    tab._edit_driver(0)
+
+    edited = state.drivers[0]
+    # Persisted: BOTH the placement face and the derived spec normal are now +x.
+    assert edited.face_placement.face_id == face_id_from_normal((1.0, 0.0, 0.0)) == 2
+    assert np.allclose(edited.spec.normal, (1.0, 0.0, 0.0))
+
+    # Survives reopen: the REAL dialog's combo now shows +x (index 2), not the +z default.
+    reopened = real_ts_dialog(placement=edited)
+    assert reopened._normal_combo.currentIndex() == 2
+    reopened.close()
+
+
+def test_reference_axis_indicator_geometry():
+    """#1: the pure indicator placement points along the reference axis and rotates with it."""
+    import numpy as np
+
+    from beamsim2.geometry.faces import reference_axis_indicator
+
+    w, h, d = 0.12, 0.10, 0.08
+    center = np.array([w / 2, h / 2, d / 2])
+
+    ind_z = reference_axis_indicator((0.0, 0.0, 1.0), w, h, d)
+    assert np.allclose(ind_z.origin, center)
+    assert np.allclose(ind_z.direction, (0.0, 0.0, 1.0))
+    assert np.isclose(ind_z.length, 1.6 * max(w, h, d))
+    assert np.allclose(ind_z.tip, center + np.array([0.0, 0.0, 1.0]) * ind_z.length)
+    assert np.allclose(ind_z.mic_pos, ind_z.tip)
+
+    # Rotating the axis to +x rotates the whole indicator (arrow + mic) to +x.
+    ind_x = reference_axis_indicator((1.0, 0.0, 0.0), w, h, d)
+    assert np.allclose(ind_x.direction, (1.0, 0.0, 0.0))
+    assert ind_x.tip[0] > center[0] and np.isclose(ind_x.tip[2], center[2])
+    assert not np.allclose(ind_x.tip, ind_z.tip)
+
+    # A non-unit axis is normalised; a zero axis falls back to +z (via reference_frame).
+    ind_scaled = reference_axis_indicator((0.0, 5.0, 0.0), w, h, d)
+    assert np.allclose(ind_scaled.direction, (0.0, 1.0, 0.0))
+    assert np.allclose(
+        reference_axis_indicator((0.0, 0.0, 0.0), w, h, d).direction, (0.0, 0.0, 1.0)
+    )
+
+
+def test_geometry_tab_reference_axis_control(qapp):
+    """#1 wiring: the Geometry tab exposes a 6-way reference-axis combo that drives AppState."""
+    import numpy as np
+
+    from beamsim2.geometry.faces import FACE_NORMALS
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.geometry_view import GeometryTab
+
+    state = AppState()
+    tab = GeometryTab(state)
+    assert tab._ref_axis_combo.count() == 6
+    assert tab._ref_axis_combo.currentIndex() == 0  # default +z front
+    assert np.allclose(state.reference_axis, (0.0, 0.0, 1.0))
+    assert state.box_dims == (tab._w.value(), tab._h.value(), tab._d.value())  # dims mirrored
+
+    tab._ref_axis_combo.setCurrentIndex(2)  # +x
+    assert np.allclose(state.reference_axis, FACE_NORMALS[2])
+
+    # Changing a box dimension must re-mirror box_dims (the basis the Drivers-list edit
+    # reconcile reads) — otherwise a re-orient there would reconcile against stale dims.
+    tab._w.setValue(0.20)  # fires _on_dims_changed
+    assert state.box_dims == (tab._w.value(), tab._h.value(), tab._d.value())
+    assert state.box_dims[0] == 0.20
+    tab.close()
+
+
+def test_canvas_driver_added_places_at_click(qapp):
+    """#2: a driver added from the canvas lands at the clicked (u, v), not the face centre."""
+    import numpy as np
+
+    from beamsim2.geometry.faces import face_local_to_center
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.geometry_view import GeometryTab
+
+    state = AppState()
+    tab = GeometryTab(state)
+    w, h, d = tab._w.value(), tab._h.value(), tab._d.value()
+
+    tab._on_canvas_driver_added(0, 0.02, -0.015, 0.03)  # +z face, off-centre click
+    assert len(state.drivers) == 1
+    dp = state.drivers[0]
+    assert dp.face_placement.face_id == 0
+    assert (dp.face_placement.u, dp.face_placement.v) == (0.02, -0.015)
+    assert dp.face_placement.u != 0.0  # genuinely off-centre, not forced to centroid
+    assert np.allclose(dp.spec.center, face_local_to_center(dp.face_placement, w, h, d))
+    tab.close()
+
+
+def test_canvas_edit_reorients_face_placed_driver(qapp, monkeypatch):
+    """#3: the canvas right-click 'Edit T/S' path reconciles a re-orient too (dims from spinboxes).
+
+    Mirrors the DriversTab edit test for the geometry_view path, which sources box dims from its own
+    spin-boxes (not AppState.box_dims) — so both edit entry points are guarded independently.
+    """
+    import numpy as np
+    from PySide6.QtWidgets import QDialog
+
+    from beamsim2.driver.terminal import default_terminal_model
+    from beamsim2.geometry.assemble import DriverSpec
+    from beamsim2.geometry.faces import FacePlacement, face_id_from_normal, face_local_to_spec
+    from beamsim2.gui import geometry_view as gv
+    from beamsim2.gui.app import AppState
+
+    state = AppState()
+    tab = gv.GeometryTab(state)
+    w, h, d = tab._w.value(), tab._h.value(), tab._d.value()
+    fp = FacePlacement(face_id=0, u=0.0, v=0.0, radius=0.03)  # +z face
+    from beamsim2.pipeline.run import DriverPlacement
+
+    state.drivers.append(
+        DriverPlacement(
+            spec=face_local_to_spec(fp, w, h, d),
+            terminal=default_terminal_model("d0"),
+            driver_id="d0",
+            face_placement=fp,
+        )
+    )
+
+    class _StubDialog:
+        def __init__(self, placement=None, parent=None):
+            self._dp = placement
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        @property
+        def placement(self):
+            old = self._dp
+            return DriverPlacement(
+                spec=DriverSpec(center=old.spec.center, normal=(0.0, 1.0, 0.0), radius=0.03),
+                terminal=old.terminal,
+                driver_id=old.driver_id,
+                face_placement=old.face_placement,
+            )
+
+    # _on_canvas_driver_edited imports TSDialog from parameters_panel inside the method.
+    import beamsim2.gui.parameters_panel as pp
+
+    monkeypatch.setattr(pp, "TSDialog", _StubDialog)
+    tab._on_canvas_driver_edited(0)
+
+    edited = state.drivers[0]
+    assert edited.face_placement.face_id == face_id_from_normal((0.0, 1.0, 0.0)) == 4  # +y
+    assert np.allclose(edited.spec.normal, (0.0, 1.0, 0.0))
+    tab.close()
+
+
+def test_build_request_threads_reference_axis(qapp):
+    """#1 wiring: SimulationTab.build_request carries AppState.reference_axis into the request.
+
+    Closes the Chunk-1 cross-cutting loop: the editor indicator and the solved dataset's
+    reference_axis attr must come from the same place, else they would silently disagree.
+    """
+    import numpy as np
+
+    from beamsim2.geometry.assemble import DriverSpec
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.parameters_panel import SimulationTab
+    from beamsim2.pipeline.run import BoxGeometry, DriverPlacement
+
+    state = AppState()
+    state.geometry = BoxGeometry(0.12, 0.10, 0.08)
+    state.drivers.append(
+        DriverPlacement(
+            spec=DriverSpec((0.06, 0.05, 0.08), (0.0, 0.0, 1.0), 0.02),
+            terminal=None,
+            driver_id="d0",
+        )
+    )
+    state.reference_axis = (1.0, 0.0, 0.0)  # +x front
+
+    tab = SimulationTab(state)
+    assert tab.build_request(state) is True
+    assert np.allclose(tab.current_request.reference_axis, (1.0, 0.0, 0.0))
+    tab.close()
+
+
+# ---------------------------------------------------------------------------
 # Test 3: SolveWorker thread plumbing
 # ---------------------------------------------------------------------------
 
