@@ -1181,3 +1181,108 @@ def test_results_tab_has_cea_subtab(qapp):
     assert "CEA2034" in titles
     assert "Sonograms" in titles
     tab.close()
+
+
+# ---------------------------------------------------------------------------
+# Chunk 5b: steer-to-front-axis (RC2) + delay-and-sum engine guidance (RC3)
+# ---------------------------------------------------------------------------
+
+
+def test_filter_designer_steers_from_front_axis(qapp):
+    """Steering is measured from the dataset's reference_axis; theta=0 aims out the front (RC2).
+
+    The run2 failure: the GUI defaulted the steer to world +z while the loudspeaker front (and the
+    opposed-driver axis) was +x, so the beam aimed broadside and no cardioid could form. The fix
+    defaults the steer to the front axis.
+    """
+    import numpy as np
+
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import FilterDesignerTab
+
+    tab = FilterDesignerTab(AppState())
+    ds = _synthetic_dataset()  # no reference_axis -> +z front
+    tab.load(ds)
+    assert np.allclose(tab._front_axis, [0.0, 0.0, 1.0])
+    assert np.allclose(tab._steer_dir(), [0.0, 0.0, 1.0], atol=1e-9)  # theta=0 -> front
+
+    # +x-facing speaker (the run2 geometry): the default beam must aim +x, not +z.
+    ds.attrs["reference_axis"] = [1.0, 0.0, 0.0]
+    tab.load(ds)
+    assert np.allclose(tab._front_axis, [1.0, 0.0, 0.0])
+    assert "+x" in tab._front_lbl.text()
+    assert np.allclose(tab._steer_dir(), [1.0, 0.0, 0.0], atol=1e-9)  # cardioid aims out the front
+
+    # An off-axis steer stays a unit vector orthogonal-component-correct about the front.
+    tab._steer_theta.setValue(90.0)
+    tab._steer_phi.setValue(0.0)
+    s = tab._steer_dir()
+    assert np.isclose(np.linalg.norm(s), 1.0)
+    assert abs(float(s @ np.array([1.0, 0.0, 0.0]))) < 1e-9  # 90 deg off the +x front
+    tab.close()
+
+
+def test_filter_designer_delay_sum_warning(qapp):
+    """Delay-and-sum + a shaping target shows the guidance note; omni or LS/Auto does not (RC3)."""
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import _ENGINES, _PATTERNS, FilterDesignerTab
+
+    tab = FilterDesignerTab(AppState())
+    tab.load(_synthetic_dataset())
+    p = {lbl: i for i, (lbl, _, _) in enumerate(_PATTERNS)}
+    e = {eng: i for i, (_, eng) in enumerate(_ENGINES)}
+
+    # Check the note's text (isVisible() is unreliable for an unshown offscreen widget).
+    tab._pattern.setCurrentIndex(p["Cardioid"])
+    tab._engine.setCurrentIndex(e["delay_sum"])
+    assert tab._engine_note.text()  # delay-sum can't make a cardioid -> warn
+
+    tab._engine.setCurrentIndex(e["ls"])
+    assert not tab._engine_note.text()  # LS can -> no warning
+
+    tab._pattern.setCurrentIndex(p["Omni"])
+    tab._engine.setCurrentIndex(e["delay_sum"])
+    assert not tab._engine_note.text()  # delay-sum is fine for omni
+    tab.close()
+
+
+def test_filter_designer_cardioid_on_real_run2_data(qapp):
+    """End-to-end on the reconstructed real 2-driver data: front-steered cardioid has a rear null.
+
+    Local-only (HDF5/ is git-ignored): skipped when the run2 export is absent. Guards the whole
+    RC1+RC2 chain through the GUI spec builder on real data.
+    """
+    import numpy as np
+
+    try:
+        from _fixtures.reconstruct_run2 import load_run2_dataset, run2_available
+    except ImportError:
+        import pytest
+
+        pytest.skip("run2 reconstruction fixture not importable")
+    import pytest
+
+    if not run2_available():
+        pytest.skip("HDF5/run2 export not present (local-only verification)")
+
+    from beamsim2.beamform.design import design
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import _ENGINES, _PATTERNS, FilterDesignerTab
+
+    ds = load_run2_dataset()
+    tab = FilterDesignerTab(AppState())
+    tab.load(ds)  # steer defaults to the +x front axis
+    tab._pattern.setCurrentIndex([lbl for lbl, _, _ in _PATTERNS].index("Cardioid"))
+    tab._engine.setCurrentIndex([eng for _, eng in _ENGINES].index("ls"))
+    result = design(ds, tab._build_spec())
+
+    uv = ds.directions.unit_vectors
+    look = int(np.argmax(uv @ np.array([1.0, 0.0, 0.0])))
+    rear = int(np.argmax(uv @ np.array([-1.0, 0.0, 0.0])))
+    freqs = np.asarray(ds.frequencies)
+    fi = int(np.argmin(np.abs(freqs - 150.0)))  # inside the achievable cardioid band
+    p = result.steered_field[fi]
+    rear_db = 20.0 * np.log10(np.abs(p[rear]) / np.abs(p[look]))
+    assert rear_db < -12.0, f"no rear null in-band: {rear_db:.1f} dB"
+    assert bool(result.metrics["feasible_mask"][fi]), "in-band bin should be feasible"
+    tab.close()

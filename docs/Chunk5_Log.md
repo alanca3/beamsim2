@@ -50,3 +50,23 @@
   degrades above ~600 Hz (kd→π). This is the honest band-limited behavior the user signed off on.
 - `feasible_mask` (a WNG/robustness flag) is now all-true on this data; the *pattern* band limit is
   read from the DI / rear-null / target-error curves, not from feasibility.
+
+### Git
+- 5a committed on `fix/chunk5a-wng-normalization`, merged `--no-ff` to `main`, tagged **v1.4.1**
+  (per user). uv.lock + other pre-existing untracked files left alone.
+
+## Session 1 (cont.) — 5b: steer-to-front-axis (RC2) + engine guidance (RC3)
+
+- `gui/filter_designer_view.py`: `_steer_dir()` now builds the steer in the dataset reference frame
+  (`core.sphere.reference_frame`), `θ=0`→front; `load()` sets `_front_axis` from
+  `ds.attrs["reference_axis"]`, resets steer to (0,0), shows `Front (0°) axis: …`; added a live
+  delay-and-sum guidance note (`_update_engine_note`, text-based for headless testability).
+- Tests (`tests/test_gui_smoke.py`, 3 new): steer default follows `reference_axis` (+z default, +x
+  when set; θ=0→front, θ=90⟂front, unit-norm); delay-sum note logic; end-to-end real-data cardioid
+  (front-steered LS rear null < −12 dB in-band; skips if `HDF5/run2` absent). **Test artifact found+
+  fixed:** `isVisible()` is False for an unshown offscreen widget → assert on `text()` instead, and
+  the note clears its text when hidden.
+- Full `tests/test_gui_smoke.py`: **39 passed**. black + ruff clean. +z-front fixtures unaffected
+  (reframed steer reduces to the old formula there).
+- Findings: `docs/Chunk5b_Findings.md`. Next: 5c (`docs/Chunk5c_Kickoff_Prompt.md`) — HDF5 atomic
+  write; **ask user for the exact GUI save-error text first**.

@@ -44,6 +44,7 @@ from beamsim2.assembly.tensor import RadiationDataset, stacked_h_full
 from beamsim2.beamform.design import design
 from beamsim2.beamform.targets import TargetSpec, build_target
 from beamsim2.core.sh_transform import great_circle_arc, resample, safe_order_for_grid
+from beamsim2.core.sphere import reference_frame
 from beamsim2.gui.results_view import (
     _CEA_COLORS,
     _CEA_LABELS,
@@ -125,6 +126,9 @@ class FilterDesignerTab(QWidget):
         self._result = None
         self._thread: Optional[QThread] = None
         self._worker: Optional[DesignWorker] = None
+        # The loudspeaker front (0deg) axis the steer angles are measured from; set per dataset
+        # (RC2 fix, Chunk 5b). Defaults to +z until a dataset is loaded.
+        self._front_axis: np.ndarray = np.array([0.0, 0.0, 1.0])
 
         root = QHBoxLayout(self)
         root.addWidget(self._build_controls(), 0)
@@ -149,10 +153,16 @@ class FilterDesignerTab(QWidget):
         self._order.setEnabled(False)
         form.addRow("Cardioid order a:", self._order)
 
+        # Steering is measured from the loudspeaker FRONT axis (the dataset's reference_axis),
+        # not world +z (RC2 fix, Chunk 5b): theta=0 aims the beam straight out the front, so the
+        # default design points where the speaker faces. _front_lbl shows which world axis that is.
         self._steer_theta = self._spin(0.0, 180.0, 0.0, " deg")
         self._steer_phi = self._spin(0.0, 360.0, 0.0, " deg")
-        form.addRow("Steer θ (from +z):", self._steer_theta)
-        form.addRow("Steer φ (azimuth):", self._steer_phi)
+        form.addRow("Steer θ (off front axis):", self._steer_theta)
+        form.addRow("Steer φ (around front):", self._steer_phi)
+        self._front_lbl = QLabel("Front (0°) axis: +z")
+        self._front_lbl.setStyleSheet("color: gray;")
+        form.addRow("", self._front_lbl)
 
         self._engine = QComboBox()
         for label, _ in _ENGINES:
@@ -161,7 +171,14 @@ class FilterDesignerTab(QWidget):
         # the active default so the default "Design" runs one fast solve, not the auto ladder's
         # up-to-4 solves (the user opts into Auto-Design deliberately).
         self._engine.setCurrentIndex([e for _, e in _ENGINES].index("ls"))
+        self._engine.currentIndexChanged.connect(self._update_engine_note)
         form.addRow("Engine:", self._engine)
+        # Live guidance: delay-and-sum only steers and cannot shape a cardioid/directivity (RC3).
+        self._engine_note = QLabel("")
+        self._engine_note.setWordWrap(True)
+        self._engine_note.setStyleSheet("color: #b22; font-size: 11px;")
+        self._engine_note.setVisible(False)
+        form.addRow("", self._engine_note)
 
         self._accept = self._spin(5.0, 90.0, 60.0, " deg")
         form.addRow("Accept half-angle:", self._accept)
@@ -282,6 +299,11 @@ class FilterDesignerTab(QWidget):
         """Attach a dataset (from a finished solve or an opened HDF5 file)."""
         self._ds = ds
         self._result = None
+        # Steer from the loudspeaker front (RC2): default the beam straight out the speaker face.
+        self._front_axis = self._front_axis_from(ds)
+        self._steer_theta.setValue(0.0)
+        self._steer_phi.setValue(0.0)
+        self._front_lbl.setText(f"Front (0°) axis: {self._axis_label(self._front_axis)}")
         self._freq_combo.blockSignals(True)
         self._freq_combo.clear()
         for f in ds.frequencies:
@@ -310,9 +332,64 @@ class FilterDesignerTab(QWidget):
 
     # ---------------------------------------------------------------- design
     def _steer_dir(self) -> np.ndarray:
+        """Steering unit vector, measured from the loudspeaker FRONT axis (RC2 fix).
+
+        ``theta`` is the angle OFF the front axis (``reference_axis``); ``theta = 0`` aims the
+        beam straight out the front. ``phi`` rotates around the front axis in the (right, up)
+        plane of the dataset's reference frame. So the default ``(0, 0)`` points where the
+        speaker faces — the correct cardioid axis for an opposed-driver box (front +x, drivers
+        along x), which the old world-+z default could never hit.
+        """
+        front, right, up = reference_frame(self._front_axis)
         th = np.deg2rad(self._steer_theta.value())
         ph = np.deg2rad(self._steer_phi.value())
-        return np.array([np.sin(th) * np.cos(ph), np.sin(th) * np.sin(ph), np.cos(th)])
+        return np.cos(th) * front + np.sin(th) * (np.cos(ph) * right + np.sin(ph) * up)
+
+    @staticmethod
+    def _front_axis_from(ds: RadiationDataset) -> np.ndarray:
+        """The dataset's loudspeaker front axis (``reference_axis``), normalized; +z fallback."""
+        ax = ds.attrs.get("reference_axis", [0.0, 0.0, 1.0])
+        if isinstance(ax, str):
+            import json
+
+            try:
+                ax = json.loads(ax)
+            except (json.JSONDecodeError, ValueError):
+                ax = [0.0, 0.0, 1.0]
+        a = np.asarray(ax, dtype=np.float64).reshape(3)
+        n = float(np.linalg.norm(a))
+        return a / n if n > 0 else np.array([0.0, 0.0, 1.0])
+
+    @staticmethod
+    def _axis_label(axis: np.ndarray) -> str:
+        """Short label for a unit axis (``+x`` / ``-y`` / ``[..]`` for off-axis fronts)."""
+        names = {
+            (1, 0, 0): "+x",
+            (-1, 0, 0): "-x",
+            (0, 1, 0): "+y",
+            (0, -1, 0): "-y",
+            (0, 0, 1): "+z",
+            (0, 0, -1): "-z",
+        }
+        key = tuple(int(round(v)) for v in axis)
+        if key in names and np.allclose(axis, key, atol=1e-6):
+            return names[key]
+        return "[" + ", ".join(f"{v:.2f}" for v in axis) + "]"
+
+    def _update_engine_note(self) -> None:
+        """Show the delay-and-sum guidance note when it can't do the chosen target (RC3 fix)."""
+        label, _, _ = _PATTERNS[self._pattern.currentIndex()]
+        engine = _ENGINES[self._engine.currentIndex()][1]
+        show = engine == "delay_sum" and label != "Omni"  # every non-omni target needs shaping
+        # Set text even when hidden empty so the state is queryable headlessly (isVisible() is
+        # False for an unshown widget regardless of setVisible).
+        self._engine_note.setText(
+            "⚠ Delay-and-sum only steers — it cannot shape a cardioid or hold directivity. "
+            "Use Least-squares or Auto-Design."
+            if show
+            else ""
+        )
+        self._engine_note.setVisible(show)
 
     def _build_spec(self) -> TargetSpec:
         label, mode, preset = _PATTERNS[self._pattern.currentIndex()]
@@ -361,6 +438,7 @@ class FilterDesignerTab(QWidget):
             # Multi-target is a search -> it must run on Auto-Design; lock the engine combo there.
             self._engine.setCurrentIndex([e for _, e in _ENGINES].index("auto"))
         self._engine.setEnabled(not is_multi)
+        self._update_engine_note()  # refresh the delay-and-sum guidance for the new pattern
 
     def _on_design(self) -> None:
         if self._ds is None:
