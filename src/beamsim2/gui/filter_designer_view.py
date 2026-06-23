@@ -18,6 +18,7 @@ from typing import Optional
 import numpy as np
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -53,12 +54,16 @@ _PATTERNS = [
     ("Cardioid order (slider)", "cardioid_order", None),
     ("Constant directivity", "steering_only", None),
     ("Maximum directivity", "steering_only", None),
+    ("Multi-target (DI/beamwidth/in-room)", "steering_only", None),
 ]
 # Pattern label -> Auto-Design objective (target class). Everything not listed is "shape".
 _PATTERN_OBJECTIVE = {
     "Constant directivity": "constant_directivity",
     "Maximum directivity": "max_directivity",
+    "Multi-target (DI/beamwidth/in-room)": "multi",
 }
+# The multi-target pattern label (Chunk 3d) — needs the Auto-Design engine + the objective controls.
+_MULTI_LABEL = "Multi-target (DI/beamwidth/in-room)"
 # Auto-Design leads the list (the user picks a target, not an algorithm) but is opt-in; the
 # concrete engines remain selectable, with Least-squares the active default (set in _build_controls
 # so the default Design is one fast solve). Auto reports which engine it chose (see below).
@@ -155,6 +160,12 @@ class FilterDesignerTab(QWidget):
         wlay.addWidget(self._wng_lbl)
         form.addRow("Robustness (WNG floor):", wrow)
 
+        # Multi-target objectives (Chunk 3d): each row = [use] target + relative weight. Active only
+        # for the Multi-target pattern (which forces the Auto-Design engine). Defaults match the
+        # research-backed in-room slope (-1 dB/oct) and a mid directive/beamwidth point.
+        self._mt_group = self._build_multi_group()
+        form.addRow(self._mt_group)
+
         self._design_btn = QPushButton("Design")
         self._design_btn.clicked.connect(self._on_design)
         form.addRow(self._design_btn)
@@ -193,6 +204,42 @@ class FilterDesignerTab(QWidget):
         s.setSuffix(suffix)
         return s
 
+    def _build_multi_group(self) -> QGroupBox:
+        """The Multi-target objective controls (Chunk 3d): per-objective use/target/weight rows."""
+        box = QGroupBox("Multi-target objectives (Auto-Design)")
+        form = QFormLayout(box)
+
+        def row(
+            target: QDoubleSpinBox, default_on: bool = True
+        ) -> tuple[QWidget, QCheckBox, QDoubleSpinBox]:
+            use = QCheckBox()
+            use.setChecked(default_on)
+            weight = self._spin(0.0, 10.0, 1.0, "")
+            weight.setSingleStep(0.5)
+            wrap = QWidget()
+            lay = QHBoxLayout(wrap)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.addWidget(use)
+            lay.addWidget(target, 1)
+            lay.addWidget(QLabel("weight:"))
+            lay.addWidget(weight)
+            return wrap, use, weight
+
+        self._mt_di = self._spin(0.0, 25.0, 12.0, " dB")
+        r1, self._mt_di_on, self._mt_di_w = row(self._mt_di)
+        form.addRow("Directivity index:", r1)
+
+        self._mt_bw = self._spin(5.0, 180.0, 45.0, " deg")
+        r2, self._mt_bw_on, self._mt_bw_w = row(self._mt_bw)
+        form.addRow("-6 dB beamwidth:", r2)
+
+        # In-room (CEA-2034-A Estimated-In-Room) spectral slope; the Harman/Olive preferred neutral
+        # value is ~ -1 dB/oct (flatter for very directive speakers). See docs/Chunk3d_Findings.md.
+        self._mt_slope = self._spin(-6.0, 2.0, -1.0, " dB/oct")
+        r3, self._mt_slope_on, self._mt_slope_w = row(self._mt_slope)
+        form.addRow("In-room slope:", r3)
+        return box
+
     # --------------------------------------------------------------- dataset
     def load(self, ds: RadiationDataset) -> None:
         """Attach a dataset (from a finished solve or an opened HDF5 file)."""
@@ -216,12 +263,13 @@ class FilterDesignerTab(QWidget):
             self._engine,
             self._accept,
             self._wng,
+            self._mt_group,
             self._design_btn,
             self._freq_combo,
         ):
             wdg.setEnabled(on)
         if on:
-            self._on_pattern_changed()
+            self._on_pattern_changed()  # restore the multi-group / engine-lock state per pattern
 
     # ---------------------------------------------------------------- design
     def _steer_dir(self) -> np.ndarray:
@@ -231,7 +279,8 @@ class FilterDesignerTab(QWidget):
 
     def _build_spec(self) -> TargetSpec:
         label, mode, preset = _PATTERNS[self._pattern.currentIndex()]
-        return TargetSpec(
+        objective = _PATTERN_OBJECTIVE.get(label, "shape")
+        common = dict(
             mode=mode,
             preset=preset,
             order_a=self._order.value() / 100.0 if mode == "cardioid_order" else None,
@@ -241,15 +290,40 @@ class FilterDesignerTab(QWidget):
             # The constant_di / max_directivity engines use Luo's proper directivity INDEX
             # (constant directivity in the loudspeaker sense); see docs/Chunk3b_Findings.md.
             directivity_mode="index",
-            # Auto-Design (engine="auto") reads `objective` (the target class) to pick the engine;
-            # concrete engines ignore it. The pattern label conveys the constant-/max-DI objectives.
-            objective=_PATTERN_OBJECTIVE.get(label, "shape"),
-            engine=_ENGINES[self._engine.currentIndex()][1],
+            objective=objective,
         )
+        if objective == "multi":
+            # Multi-target (Chunk 3d): scalarized {DI, beamwidth, in-room} search on Auto-Design.
+            # An unchecked objective -> target None (dropped); the rest are the active objectives.
+            return TargetSpec(
+                **common,
+                engine="auto",
+                target_di_db=float(self._mt_di.value()) if self._mt_di_on.isChecked() else None,
+                target_beamwidth_deg=(
+                    float(self._mt_bw.value()) if self._mt_bw_on.isChecked() else None
+                ),
+                target_inroom_slope_db_per_oct=(
+                    float(self._mt_slope.value()) if self._mt_slope_on.isChecked() else None
+                ),
+                objective_weights={
+                    "di": float(self._mt_di_w.value()),
+                    "beamwidth": float(self._mt_bw_w.value()),
+                    "inroom": float(self._mt_slope_w.value()),
+                },
+            )
+        # Auto-Design (engine="auto") reads `objective` (the target class) to pick the engine;
+        # concrete engines ignore it. The pattern label conveys the constant-/max-DI objectives.
+        return TargetSpec(**common, engine=_ENGINES[self._engine.currentIndex()][1])
 
     def _on_pattern_changed(self) -> None:
-        _, mode, _ = _PATTERNS[self._pattern.currentIndex()]
+        label, mode, _ = _PATTERNS[self._pattern.currentIndex()]
         self._order.setEnabled(mode == "cardioid_order")
+        is_multi = label == _MULTI_LABEL
+        self._mt_group.setEnabled(is_multi)
+        if is_multi:
+            # Multi-target is a search -> it must run on Auto-Design; lock the engine combo there.
+            self._engine.setCurrentIndex([e for _, e in _ENGINES].index("auto"))
+        self._engine.setEnabled(not is_multi)
 
     def _on_design(self) -> None:
         if self._ds is None:
@@ -282,6 +356,22 @@ class FilterDesignerTab(QWidget):
             extra = f"  constant DI = {result.attrs['constant_di_db']:.2f} dB"
         elif "constant_gdi_db" in result.attrs:  # directivity_mode="region" (cap-ratio GDI)
             extra = f"  constant GDI = {result.attrs['constant_gdi_db']:.2f} dB"
+        # Multi-target: append a per-objective achieved-vs-target summary (Chunk 3d honest report).
+        if result.attrs.get("auto_class") == "multi":
+            ma = result.attrs.get("multi_achieved", {})
+            bits = []
+            if "di" in ma:
+                bits.append(f"DI {ma['di']['achieved']:.1f}/{ma['di']['target']:.0f} dB")
+            if "beamwidth" in ma:
+                bw_a = ma["beamwidth"]["achieved"]
+                bw_s = "n/a" if not np.isfinite(bw_a) else f"{bw_a:.0f}"
+                bits.append(f"BW {bw_s}/{ma['beamwidth']['target']:.0f}°")
+            if "inroom" in ma:
+                bits.append(
+                    f"in-room {ma['inroom']['achieved']:+.1f}/{ma['inroom']['target']:+.1f} dB/oct"
+                )
+            if bits:
+                extra += "  ·  multi: " + ", ".join(bits)
         # Auto-Design: name the engine it CHOSE and surface its honest reason / infeasibility.
         engine_label = result.attrs["engine"]
         if result.attrs.get("auto_selected"):
