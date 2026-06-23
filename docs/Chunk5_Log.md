@@ -70,3 +70,56 @@
   (reframed steer reduces to the old formula there).
 - Findings: `docs/Chunk5b_Findings.md`. Next: 5c (`docs/Chunk5c_Kickoff_Prompt.md`) — HDF5 atomic
   write; **ask user for the exact GUI save-error text first**.
+
+## Session 2 — 2026-06-23 — 5c: HDF5 atomic write + attr hardening
+
+### Root-cause confirmed
+User supplied the exact GUI error: `Object dtype dtype('O') has no native HDF5 equivalent`.
+Trace: `TerminalModel.to_attrs()` (`driver/terminal.py:118`) emits `box_volume_m3: float | None`;
+when `box_volume=None` (free-air / infinite-baffle, the default), `_write_attrs` passed `None`
+directly to `h5obj.attrs[key]` — h5py does `np.asarray(None)` → object dtype → that exact error.
+Asymmetry: front driver had a box volume entered (float → wrote fine), back driver was free-air
+(`None` → raised on the second iteration) → exactly the "driver_0 written, driver_1 missing" file.
+
+### 5c implementation (`src/beamsim2/io/hdf5_store.py`)
+
+**`_write_attrs` hardened** (added `context: str = ""` parameter):
+- `None` → skipped (absent = unset; DATA_CONTRACT §3.5 does not list `box_volume_m3`).
+- `dict` / `list` / `tuple` → JSON-encoded (tuple coerced to list first; extends prior dict/list
+  handling to tuples defensively).
+- `np.ndarray` or scalar → `h5py.attrs[key] = val`; on `TypeError`/`ValueError` re-raises as
+  `TypeError` naming the key, context (owner driver id), value type, and original h5py message.
+- Call sites now pass context: `" (root attrs)"`, `" (directions attrs)"`, `" for driver 'X'"`.
+
+**`write_dataset` made atomic** (temp-file + `os.replace`):
+- Added `os` + `tempfile` to imports.
+- `tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")` creates the temp in
+  the same directory → `os.replace` is always same-filesystem (no cross-device rename).
+- All writes go to `tmp_path`; on success `os.replace(tmp_path, path)` atomically replaces the
+  target (the original file is never truncated mid-write).
+- On *any* exception: unlink the temp file (best-effort, swallows `OSError`) and re-raise. Original
+  target left untouched.
+- Docstring updated to explain atomicity and the mode-0600 caveat.
+
+### Tests (`tests/test_hdf5_atomic.py`, 14 tests, CI-safe)
+1. `TestAsymmetricNone` (4): exact-bug reproduction — write succeeds with `box_volume_m3=None`;
+   float attr on driver_0 survives; None attr is absent on read-back; both drivers present.
+2. `TestAtomicWrite` (4): bad attr (object-dtype ndarray) raises `TypeError`; error names driver id
+   + key; pre-existing file byte-identical after failure; no `.tmp` left on disk.
+3. `TestRoundTrip` (6): lossless 2-driver round-trip (count, order, H_full, frequencies, scalar attrs,
+   dict attrs like `ts_params`).
+**14/14 passed.** Regression suite: 82 passed (test_hdf5_roundtrip + solver_correctness + gui_smoke
++ phase_origin). Full CI-safe suite: **499 passed, 14 deselected** (no change from 5b baseline).
+
+### Decisions / notes
+- Fix at the serialization layer (`_write_attrs`), not at `to_attrs()`: any future `None`-valued attr
+  is safe without touching the emitter.
+- Drop-None is correct for a single-user desktop app (no multi-user config risk).
+- `mkstemp` creates temp at mode 0600 → final file inherits owner-only perms. Acceptable for
+  single-user desktop; documented in `Chunk5c_Findings.md`.
+- No GUI change needed: `_save_hdf5`'s existing `try/except + QMessageBox.critical` dialog now shows
+  "Save failed" for a genuinely unserializable attr (very rare), with the original file intact.
+
+### Git
+- 5c committed on `feature/hdf5-atomic-write`, merged `--no-ff` to `main`, tagged **v1.4.3**.
+  **Chunk 5 complete.**

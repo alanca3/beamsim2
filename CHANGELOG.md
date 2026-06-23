@@ -4,6 +4,36 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Bug-Fix Chunk 5c: HDF5 atomic write + attr hardening (data-integrity)
+
+Third sub-chunk of Chunk 5 (`docs/Chunk5_Gameplan.md`); closes Chunk 5. Saves the dataset to HDF5
+from the GUI without corrupting or partially writing the file. Schema (`schema_version`) unchanged.
+
+### Fixed
+- **HDF5 save no longer crashes or produces a corrupt partial file (`io/hdf5_store.py`).**
+  Root cause: `box_volume_m3=None` (emitted by `TerminalModel.to_attrs()` for free-air/infinite-baffle
+  drivers) reached `h5py.attrs[key] = None`, which does `np.asarray(None)` → object dtype →
+  `TypeError: Object dtype dtype('O') has no native HDF5 equivalent`. Because `write_dataset` opened
+  `h5py.File(path, "w")` (truncates immediately), a raise on the *second* driver left the file with
+  only the first driver on disk — the exact `HDF5/run2/HDF5.h5` corruption observed (lists 2 drivers,
+  stores 1).
+- **`_write_attrs` skips `None` values** (absent attr = unset, the natural HDF5 idiom). The free-air
+  `box_volume_m3=None` is not in the DATA_CONTRACT §3.5 list and has no disk representation.
+- **`_write_attrs` now gives a clear, actionable error** on any other un-serialisable value: names the
+  attr key, the owning driver id, the Python type, and the original h5py message — instead of a raw
+  `TypeError` with no context.
+- **`write_dataset` is now atomic**: writes to a temp file in the same directory, then
+  `os.replace()` (same-filesystem rename) to the target only on full success. A failed write
+  never truncates or corrupts a pre-existing file. Temp file is cleaned up on failure.
+- `dict` / `list` / `tuple` values are all JSON-encoded (previous code handled `dict`/`list`; `tuple`
+  is now also safe, coerced to list before encoding).
+
+### Added
+- **`tests/test_hdf5_atomic.py` (14 tests, CI-safe):** (1) exact-bug reproduction — asymmetric
+  `box_volume_m3` (float on driver_0, None on driver_1) now writes and round-trips correctly; (2)
+  atomicity — a write that raises mid-stream leaves the pre-existing file byte-identical and no `.tmp`
+  file on disk; (3) lossless 2-driver round-trip with a rich attr set.
+
 ## [Unreleased] — Bug-Fix Chunk 5b: filter-designer steer-to-front + engine guidance (RC2, RC3)
 
 Second sub-chunk of Chunk 5 (`docs/Chunk5_Gameplan.md`); GUI-only, no core/solver change. After 5a
