@@ -706,6 +706,7 @@ class GeometryTab(QWidget):
 
     geometryChanged = Signal()
     driversChanged = Signal()
+    stateChanged = Signal()  # box dims / fillet / reference-axis changed (undo capture)
 
     def __init__(self, state, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -731,6 +732,8 @@ class GeometryTab(QWidget):
         # Dimension changes → update 3-D canvas live
         for sb in (self._w, self._h, self._d):
             sb.valueChanged.connect(self._on_dims_changed)
+        # Fillet changes don't redraw (mesh not built yet) but DO count as user input.
+        self._fi.valueChanged.connect(self._on_fillet_changed)
 
         # Keep AppState's shared dims in sync from construction (the driver editors and
         # the Drivers-list "Edit" reconcile read box_dims, not these widgets directly).
@@ -803,6 +806,124 @@ class GeometryTab(QWidget):
         """Called by other tabs when their driver edits change the list."""
         self._refresh_canvas()
 
+    # ── Project save / load helpers (called by MainWindow) ───────────────────
+
+    def get_project_params(self) -> dict:
+        """Return geometry-tab state as a flat dict for project save / undo snapshot.
+
+        Returns
+        -------
+        dict
+            Keys: width, height, depth, fillet_radius, reference_axis (list[float]).
+        """
+        return {
+            "width": self._w.value(),
+            "height": self._h.value(),
+            "depth": self._d.value(),
+            "fillet_radius": self._fi.value(),
+            "reference_axis": list(self._state.reference_axis),
+        }
+
+    def apply_project_params(self, d: dict, *, block: bool = True) -> None:
+        """Restore geometry-tab widget values from a project-params dict.
+
+        Updates spin-boxes, reference-axis combo, and the matching AppState fields.
+        Does **not** call ``refresh_canvas()`` — the caller is responsible for
+        triggering a repaint after all tabs have been restored.
+
+        Parameters
+        ----------
+        d : dict
+            A dict produced by ``get_project_params()``.
+        block : bool
+            If True (default), block widget signals during the write so that
+            change-capture slots do not fire mid-apply.
+        """
+        widgets_to_block = [self._w, self._h, self._d, self._fi, self._ref_axis_combo]
+        if block:
+            for w in widgets_to_block:
+                w.blockSignals(True)
+        try:
+            self._w.setValue(float(d.get("width", self._w.value())))
+            self._h.setValue(float(d.get("height", self._h.value())))
+            self._d.setValue(float(d.get("depth", self._d.value())))
+            self._fi.setValue(float(d.get("fillet_radius", self._fi.value())))
+            ra = tuple(float(v) for v in d.get("reference_axis", self._state.reference_axis))
+            idx = face_id_from_normal(ra)  # type: ignore[arg-type]
+            if idx >= 0:
+                self._ref_axis_combo.setCurrentIndex(idx)
+            # Sync AppState directly (signals blocked, so slots won't fire)
+            self._state.box_dims = (self._w.value(), self._h.value(), self._d.value())
+            self._state.reference_axis = FACE_NORMALS[self._ref_axis_combo.currentIndex()]
+            self._state.geometry = None  # invalidate; rebuild on Preview
+        finally:
+            if block:
+                for w in widgets_to_block:
+                    w.blockSignals(False)
+
+    # ── Camera / View menu helpers ────────────────────────────────────────────
+
+    def reset_view(self) -> None:
+        """Reset the 3-D camera to the default bounding-box-fit view."""
+        if not (_PV_OK and isinstance(self._editor, _DriverEditorCanvas)):
+            return
+        pl = getattr(self._editor, "_plotter", None)
+        if pl is None:
+            return
+        pl.reset_camera()
+        pl.render()
+
+    def set_parallel_projection(self, on: bool) -> None:
+        """Toggle between perspective (False) and orthographic/parallel (True) projection.
+
+        Parameters
+        ----------
+        on : bool
+            True → orthographic (parallel) projection; False → perspective.
+        """
+        if not (_PV_OK and isinstance(self._editor, _DriverEditorCanvas)):
+            return
+        pl = getattr(self._editor, "_plotter", None)
+        if pl is None:
+            return
+        if on:
+            pl.enable_parallel_projection()
+        else:
+            pl.disable_parallel_projection()
+        pl.render()
+
+    def set_view(self, name: str) -> None:
+        """Set a preset camera view by name.
+
+        Face/front convention: +z=front, +y=top, +x=right (per geometry/faces.py).
+
+        Parameters
+        ----------
+        name : str
+            One of: ``"front"``, ``"back"``, ``"left"``, ``"right"``,
+            ``"top"``, ``"bottom"``, ``"isometric"``.
+        """
+        if not (_PV_OK and isinstance(self._editor, _DriverEditorCanvas)):
+            return
+        pl = getattr(self._editor, "_plotter", None)
+        if pl is None:
+            return
+
+        _views = {
+            "front": ((0, 0, 1), (0, 1, 0)),  # looking at +z face, up = +y
+            "back": ((0, 0, -1), (0, 1, 0)),  # looking at -z face
+            "right": ((1, 0, 0), (0, 1, 0)),  # looking at +x face
+            "left": ((-1, 0, 0), (0, 1, 0)),  # looking at -x face
+            "top": ((0, 1, 0), (0, 0, -1)),  # looking at +y face, up = -z
+            "bottom": ((0, -1, 0), (0, 0, 1)),  # looking at -y face, up = +z
+        }
+        if name == "isometric":
+            pl.view_isometric()
+        elif name in _views:
+            vec, viewup = _views[name]
+            pl.view_vector(vec, viewup=viewup)
+        pl.render()
+
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _refresh_canvas(self) -> None:
@@ -820,6 +941,7 @@ class GeometryTab(QWidget):
         """Reference-axis combo changed → store on AppState and redraw the indicator."""
         self._state.reference_axis = FACE_NORMALS[index]
         self._refresh_canvas()
+        self.stateChanged.emit()
 
     def _on_dims_changed(self) -> None:
         """Box dimensions changed: re-derive all face-local drivers and re-render."""
@@ -834,7 +956,15 @@ class GeometryTab(QWidget):
         self._state.geometry = None
         self._health_label.setText("Dimensions changed — click 'Preview mesh' to rebuild.")
         self._health_label.setStyleSheet("")
+        # geometryChanged is also connected to _on_state_changed in MainWindow;
+        # do NOT also emit stateChanged here — that would push two undo entries
+        # per dims change.  stateChanged is reserved for fillet/ref-axis where
+        # geometryChanged is not emitted.
         self.geometryChanged.emit()
+
+    def _on_fillet_changed(self) -> None:
+        """Fillet radius changed: no live redraw (mesh not built yet), but snapshot."""
+        self.stateChanged.emit()
 
     def _on_add_mode_toggled(self, checked: bool) -> None:
         """Toggle 'add driver' mode on the canvas."""
