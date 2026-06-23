@@ -449,7 +449,11 @@ class _DriverEditorCanvas(QWidget):
         import vtk
 
         picker = vtk.vtkCellPicker()
-        picker.SetTolerance(0.001)
+        # Tolerance is a fraction of the render-window size.  0.001 was ~40x tighter
+        # than VTK's 0.025 default, making a thin driver disc very hard to click
+        # (Bug #2 "difficult to select driver"); 0.01 is forgiving but still well
+        # under the default so faces vs drivers stay distinguishable.
+        picker.SetTolerance(0.01)
         renderer = self._plotter.renderer
         picker.Pick(x, y, 0, renderer)
         pos = picker.GetPickPosition()
@@ -487,16 +491,18 @@ class _DriverEditorCanvas(QWidget):
         """
         renderer = self._plotter.renderer
 
-        # Two display depths → two world points → ray direction
-        p0 = [0.0, 0.0, 0.0]
-        p1 = [0.0, 0.0, 0.0]
-        renderer.SetDisplayPoint(x, y, 0.0)
+        # Two display depths → two world points → ray direction.
+        # NOTE: vtkRenderer.GetWorldPoint() takes NO arguments and RETURNS the
+        # homogeneous world point (x, y, z, w); the old in-place form
+        # GetWorldPoint(p0) raised TypeError on every drag (Bug #2 — drag never
+        # actually moved the driver).
+        renderer.SetDisplayPoint(float(x), float(y), 0.0)
         renderer.DisplayToWorld()
-        renderer.GetWorldPoint(p0)
+        p0 = list(renderer.GetWorldPoint())
 
-        renderer.SetDisplayPoint(x, y, 1.0)
+        renderer.SetDisplayPoint(float(x), float(y), 1.0)
         renderer.DisplayToWorld()
-        renderer.GetWorldPoint(p1)
+        p1 = list(renderer.GetWorldPoint())
 
         # Handle homogeneous coordinate (w component)
         if abs(p0[3]) > 1e-12:

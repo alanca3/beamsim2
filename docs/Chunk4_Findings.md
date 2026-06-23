@@ -94,6 +94,24 @@ absent — i.e. headless, since PyVista is a default dep) does **not** draw the 
 indicator; a no-PyVista user sees the box preview without the arrow/mic. Acceptable because the
 interactive editor (the subject of all three bugs) requires PyVista anyway.
 
+### Interactive pass — round 1 (the user's live verification did its job)
+
+The user's hands-on pass (#1, #3, #4, #5 ✓) surfaced **two GL-bound defects that no headless test
+reached** — exactly why the pass is load-bearing:
+
+1. **Drag crashed on every mouse-move (`_ray_plane_hit`).** `vtkRenderer.GetWorldPoint()` takes **no**
+   arguments and *returns* the homogeneous world point; the pre-existing code called the in-place form
+   `GetWorldPoint(p0)`, raising `TypeError` on each `MouseMoveEvent` — so the driver never moved
+   (this *was* the user's "no way to drag a driver" in bug #2; the drag path had simply never been
+   exercised). *Fixed:* the correct `SetDisplayPoint → DisplayToWorld → GetWorldPoint()` idiom;
+   validated off-screen that the no-arg form returns a 4-tuple and the old form raises the exact error.
+2. **Drivers hard to select (#2 polish).** `vtkCellPicker` tolerance was `0.001` — ~40× tighter than
+   VTK's `0.025` default — so a thin driver disc was very hard to click. *Fixed:* tolerance `0.01`
+   (forgiving but still under the default, so faces vs drivers stay distinguishable).
+
+Both are GL-bound (no headless regression test possible without a GL context, per the codebase's
+manual-verification convention for VTK code); re-verified by the user in interactive pass round 2.
+
 ## Review outcome
 
 Verified by an **adversarial multi-dimension review workflow** (ultracode): dimensions = (a) orientation
