@@ -60,6 +60,12 @@ and NumCalc path, and unsaved-changes guards. No on-disk solve schema changes (H
 - **Open-dataset HDF5 dialog no longer offers `*.bsim`** (`parameters_panel.py`): `.bsim` belongs
   to the separate "Open Project" action.
 
+### Known issues
+- **⌘Z / ⇧⌘Z keyboard shortcuts for Undo/Redo do not fire** when a spin box or other
+  input widget has keyboard focus (macOS Qt shortcut routing). The `ApplicationShortcut`
+  context fix was applied but did not resolve it on this hardware; root cause is still
+  under investigation. Undo/Redo remain fully functional via Edit → Undo / Edit → Redo.
+
 ## [1.4.3] — 2026-06-23 — Bug-Fix Chunk 5c: HDF5 atomic write + attr hardening (data-integrity)
 
 Third sub-chunk of Chunk 5 (`docs/Chunk5_Gameplan.md`); closes Chunk 5. Saves the dataset to HDF5
