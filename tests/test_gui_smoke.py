@@ -295,6 +295,195 @@ def test_filter_designer_multi_target(qapp):
     tab.close()
 
 
+# ---------------------------------------------------------------------------
+# Chunk 3e: filter-designer visualization (render gate — correct series + cardinal rule)
+# ---------------------------------------------------------------------------
+
+
+def _ax_labels(ax):
+    """Line labels on one matplotlib axis (the discriminating 'correct series' check)."""
+    return [ln.get_label() for ln in ax.lines]
+
+
+def test_filter_designer_3e_views_render_correct_series(qapp):
+    """Chunk 3e: every new filter-designer plot view builds with the correct series.
+
+    Asserts the *series* (per-deliverable line counts / labels), not merely that nothing raised,
+    and guards the cardinal rule: plotting reads the stored H-tensor but never mutates it.
+    """
+    from beamsim2.beamform.design import design
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import FilterDesignerTab
+    from beamsim2.metrics.cea2034 import DI_CURVES, SPL_CURVES
+
+    state = AppState()
+    tab = FilterDesignerTab(state)
+    ds = _synthetic_dataset()
+    n_drivers = len(ds.drivers)  # 2
+    tab.load(ds)
+
+    # Five plot sub-tabs: Polar, Directivity, Filters, Per-driver, CEA2034 / in-room.
+    titles = [tab._plot_tabs.tabText(i) for i in range(tab._plot_tabs.count())]
+    assert titles == ["Polar", "Directivity", "Filters", "Per-driver", "CEA2034 / in-room"]
+
+    # Cardinal rule: snapshot the stored tensors; plotting must leave them byte-for-byte equal.
+    snaps = [(d.H_bem.copy(), d.H_full.copy()) for d in ds.drivers]
+
+    result = design(ds, tab._build_spec())  # default = cardioid / least-squares
+    tab._on_design_done(result)  # refreshes ALL views at once
+
+    for d, (bem0, full0) in zip(ds.drivers, snaps):
+        assert np.array_equal(d.H_bem, bem0), "plotting mutated stored H_bem (cardinal rule)"
+        assert np.array_equal(d.H_full, full0), "plotting mutated stored H_full (cardinal rule)"
+
+    # Polar (achieved-vs-target directivity): both curves present.
+    assert "achieved" in _ax_labels(tab._polar.ax) and "target" in _ax_labels(tab._polar.ax)
+
+    # Directivity dashboard: DI + -6 dB beamwidth + WNG panels, with the WNG floor reference.
+    metrics_axes = tab._metrics_canvas.fig.axes
+    assert len(metrics_axes) == 4  # 3 panels + the twin axis carrying the target-error series
+    metric_labels = {lbl for ax in metrics_axes for lbl in _ax_labels(ax)}
+    assert {
+        "achieved DI",
+        "-6 dB beamwidth",
+        "achieved WNG",
+        "WNG floor",
+        "target err",
+    } <= metric_labels
+
+    # Filters: per-driver weight magnitude + phase, one line per driver on each panel.
+    f_axes = tab._filter_canvas.fig.axes
+    assert len(f_axes) == 2
+    assert len(f_axes[0].lines) == n_drivers and len(f_axes[1].lines) == n_drivers
+
+    # Per-driver responses: filtered on-axis per driver + the combined beam (M+1 lines).
+    d_axes = tab._driver_canvas.fig.axes
+    assert len(d_axes) == 2
+    assert len(d_axes[0].lines) == n_drivers + 1
+    assert "combined" in _ax_labels(d_axes[0])
+
+    # CEA2034 / in-room: SPL spinorama (left axis) + two DI curves (twin); in-room curve present.
+    cea_axes = tab._cea_canvas.fig.axes
+    assert len(cea_axes) == 2
+    assert len(cea_axes[0].lines) == len(SPL_CURVES)
+    assert len(cea_axes[1].lines) == len(DI_CURVES)
+    assert "Estimated In-Room" in {lbl for ax in cea_axes for lbl in _ax_labels(ax)}
+    tab.close()
+
+
+def test_filter_designer_3e_multi_target_reference_lines(qapp):
+    """3e: multi-target objectives appear as dashed target reference lines on the metrics view."""
+    from beamsim2.beamform.design import design
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import _MULTI_LABEL, _PATTERNS, FilterDesignerTab
+
+    state = AppState()
+    tab = FilterDesignerTab(state)
+    tab.load(_synthetic_dataset())
+    tab._pattern.setCurrentIndex([lbl for lbl, _, _ in _PATTERNS].index(_MULTI_LABEL))
+    result = design(tab._ds, tab._build_spec())
+    tab._on_design_done(result)
+    metric_labels = {lbl for ax in tab._metrics_canvas.fig.axes for lbl in _ax_labels(ax)}
+    # The default multi-target spec sets a DI and a beamwidth target -> dashed reference lines.
+    assert "target DI" in metric_labels and "target BW" in metric_labels
+    tab.close()
+
+
+def test_filter_designer_3e_cea_references_steer_axis(qapp):
+    """3e (load-bearing): the CEA spinorama is referenced to the BEAM axis, not the dataset front.
+
+    All other 3e tests steer +z on a default +z-front dataset, where the two axes coincide and a
+    regression to ``_reference_axis(ds)`` would pass unnoticed. Here the beam is steered to +x while
+    the dataset front stays +z, so the steer-referenced and front-referenced spinoramas differ — and
+    the plotted On-Axis curve must match the steer-referenced one (consistency with the in-room
+    slope the orchestrator/metrics line reports).
+    """
+    from dataclasses import replace
+
+    from beamsim2.beamform.design import design
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import FilterDesignerTab
+    from beamsim2.gui.results_view import _CEA_LABELS
+    from beamsim2.metrics.cea2034 import compute_cea2034
+
+    state = AppState()
+    tab = FilterDesignerTab(state)
+    ds = _synthetic_dataset()  # reference_axis defaults to +z (front = +z)
+    tab.load(ds)
+    spec = replace(tab._build_spec(), steer_dir=np.array([1.0, 0.0, 0.0]))  # beam +x != front +z
+    tab._result = design(ds, spec)
+    tab._replot_cea()
+
+    onaxis = [
+        ln
+        for ax in tab._cea_canvas.fig.axes
+        for ln in ax.lines
+        if ln.get_label() == _CEA_LABELS["on_axis"]
+    ][0]
+    plotted = np.asarray(onaxis.get_ydata())
+    steer_ref = compute_cea2034(
+        tab._result.steered_field, ds.frequencies, ds.directions, np.array([1.0, 0.0, 0.0])
+    )["on_axis"]
+    front_ref = compute_cea2034(
+        tab._result.steered_field, ds.frequencies, ds.directions, np.array([0.0, 0.0, 1.0])
+    )["on_axis"]
+    assert np.allclose(plotted, steer_ref, atol=1e-6)  # plotted spinorama uses the beam axis
+    assert not np.allclose(plotted, front_ref, atol=0.1)  # ... which genuinely differs from front
+    tab.close()
+
+
+def test_filter_designer_3e_metrics_handles_inf_wng_and_infeasible(qapp):
+    """3e: the metrics view survives -inf WNG (collapsed bins) and flags infeasible bins in red."""
+    from beamsim2.beamform.design import design
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import FilterDesignerTab
+
+    state = AppState()
+    tab = FilterDesignerTab(state)
+    ds = _synthetic_dataset()
+    tab.load(ds)
+    result = design(ds, tab._build_spec())
+    floor = float(result.spec.wng_floor_db)
+    # Inject the documented honest edge cases into the FROZEN metrics (display-only mutation of
+    # copies of the result's dicts — never the stored H): bin 0 = a finite sub-floor INFEASIBLE bin
+    # (the common case -> a *visible* red marker); bin 1 = a collapsed bin (-inf) that stays
+    # feasible (proves -inf is masked to a gap, not crashing the log axis).
+    wng = np.asarray(result.metrics["wng_db"], dtype=float).copy()
+    wng[0] = floor - 3.0
+    wng[1] = -np.inf
+    result.metrics["wng_db"] = wng
+    feas = np.asarray(result.metrics["feasible_mask"], dtype=bool).copy()
+    feas[0] = False
+    result.metrics["feasible_mask"] = feas
+    tab._on_design_done(result)  # must not raise on -inf / nan
+    marker = [
+        ln
+        for ax in tab._metrics_canvas.fig.axes
+        for ln in ax.lines
+        if ln.get_label() == "infeasible bin"
+    ][0]
+    ydata = np.asarray(marker.get_ydata(), dtype=float)
+    assert ydata.size >= 1 and np.all(np.isfinite(ydata))  # a real drawn marker, not plotted at nan
+    tab.close()
+
+
+def test_filter_designer_3e_freq_combo_redraws_polar(qapp):
+    """3e: the 'Polar frequency' combo redraws the polar view alone (other views span the band)."""
+    from beamsim2.beamform.design import design
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import FilterDesignerTab
+
+    state = AppState()
+    tab = FilterDesignerTab(state)
+    ds = _synthetic_dataset()
+    tab.load(ds)
+    result = design(ds, tab._build_spec())
+    tab._on_design_done(result)
+    tab._freq_combo.setCurrentIndex(0)  # fires _replot_polar only
+    assert f"{ds.frequencies[0]:.0f} Hz" in tab._polar.ax.get_title()
+    tab.close()
+
+
 def test_results_balloon_view_loads(qapp):
     """_BalloonView.load() must not raise for a 14-direction dataset."""
     from beamsim2.gui.results_view import _BalloonView

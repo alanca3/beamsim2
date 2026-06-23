@@ -4,6 +4,46 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-06-22 — Bug-Fix Chunk 3 complete: filter-designer visualization (3e)
+
+Fifth and final sub-chunk of the beamforming/filter-designer rebuild (#8, `docs/Bug_Fix_Proposal.md`)
+— **closing Chunk 3** (`v1.2.1`→`v1.2.4` engines + auto/multi-target, now visualized). 3e is **pure
+visualization**: it adds the remaining plot views to the Filter Designer tab, all **read-only** over
+the returned `DesignResult` — it never recomputes, re-tunes, or re-solves the design, and never
+re-zeros / minimum-phase-ifies a driver (cardinal rule). All five proposal deliverables are now on
+screen: per-driver responses, filter magnitude/phase, achieved-vs-target directivity, CEA-2034-A
+in-room, and beamwidth/DI/WNG vs frequency — reusing the Chunk-2 plotting infrastructure. Findings,
+the load-bearing premises, and the review outcome are in `docs/Chunk3e_Findings.md`. Schema unchanged
+(no `schema_version` bump).
+
+### Added
+
+- **Five filter-designer plot views (`gui/filter_designer_view.py`).** The right-hand plot panel is
+  now a `QTabWidget` of `_MplCanvas` sub-tabs (mirroring `results_view.ResultsTab`): **Polar**
+  (achieved vs target at one frequency), **Directivity** (DI / −6 dB beamwidth / WNG vs frequency,
+  with the WNG floor, infeasible-bin markers, multi-target DI/beamwidth reference lines, and the
+  target-error on a twin axis), **Filters** (per-driver weight magnitude in dB-re-max + unwrapped
+  phase), **Per-driver** (filtered `w_m·H_full` on-axis responses + the combined steered beam), and
+  **CEA2034 / in-room** (the steered spinorama, with the Estimated-In-Room curve emphasised).
+- **Render-gate tests (`tests/test_gui_smoke.py`).** Assert the *correct series* on every view (line
+  counts per driver, labels, axes — not merely "did not raise"), a **cardinal-rule snapshot guard**
+  (stored `H_bem`/`H_full` byte-equal after plotting), the multi-target reference lines, the
+  **CEA `steer_dir`-referencing guard** (steered +x on a +z-front dataset), the WNG `-inf` / infeasible
+  edge cases, and the frequency-combo→polar-only wiring.
+
+### Notes
+
+- **CEA reference axis = the beam axis (`steer_dir`), not the dataset front axis.** The new spinorama
+  references the listener's on-axis to the steered beam, so its plotted in-room slope agrees with the
+  number `orchestrator.design_multi` already reports (using the dataset front axis would silently
+  disagree). Guarded by a dedicated test.
+- **Reuse over duplication.** The dB-SPL conversion reuses `results_view._db`; no new plotting helper
+  was introduced. The frequency combo redraws the polar view alone (the band-spanning views, incl. the
+  per-candidate SH resampling, do not re-run on a frequency change).
+- Verified by an **adversarial multi-dimension review workflow** (cardinal-rule safety, plotted-series
+  correctness, reuse, test/completeness — each finding adversarially verified). The cardinal-rule
+  dimension found nothing; the low/nit findings were applied. Full CI-safe suite green.
+
 ## [1.2.4] — 2026-06-22 — Bug-Fix Chunk 3d: multi-target objectives
 
 Fourth sub-chunk of the beamforming/filter-designer rebuild (#8, `docs/Bug_Fix_Proposal.md`). A new

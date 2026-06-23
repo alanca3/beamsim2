@@ -3,8 +3,14 @@
 A thin shell over the Qt-free core (:mod:`beamsim2.beamform.design`). The user picks a target
 beam (pattern preset, optional cardioid-order, steering direction), an engine, and a
 robustness (white-noise-gain) floor; "Design" runs the solver on a background thread; the
-result is plotted (achieved vs target H-plane polar + directivity-vs-frequency) and can be
-exported for audit in VituixCAD/REW (:func:`beamsim2.io.filter_export.export_filter_design`).
+result is plotted and can be exported for audit in VituixCAD/REW
+(:func:`beamsim2.io.filter_export.export_filter_design`).
+
+The plot panel (Chunk 3e) is a sub-tab per view, all **read-only** over the returned
+``DesignResult`` (never recomputing or re-tuning the design): **Polar** (achieved vs target),
+**Directivity** (DI / -6 dB beamwidth / WNG vs frequency), **Filters** (per-driver weight
+magnitude + phase), **Per-driver** (filtered on-axis responses + the combined beam), and
+**CEA2034 / in-room** (the steered spinorama). See :meth:`FilterDesignerTab._build_plots`.
 
 Follows the Phase-1 GUI conventions: ``AppState``, the matplotlib ``_MplCanvas`` pattern, a
 background ``QThread`` worker, and a strict one-way core<-gui dependency.
@@ -29,15 +35,27 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSlider,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from beamsim2.assembly.tensor import RadiationDataset
+from beamsim2.assembly.tensor import RadiationDataset, stacked_h_full
 from beamsim2.beamform.design import design
 from beamsim2.beamform.targets import TargetSpec, build_target
 from beamsim2.core.sh_transform import great_circle_arc, resample, safe_order_for_grid
-from beamsim2.gui.results_view import _MplCanvas
+from beamsim2.gui.results_view import (
+    _CEA_COLORS,
+    _CEA_LABELS,
+    _db,
+    _MplCanvas,
+    _quiet_redraw_warnings,
+)
+from beamsim2.metrics.cea2034 import DI_CURVES, SPL_CURVES, compute_cea2034
+
+# dB-SPL (re 20 µPa) conversion is reused from results_view (`_db`); only the filter-weight
+# magnitude path needs its own zero-guard, as it references |w| to the loudest weight (not 20 µPa).
+_MAG_FLOOR = 1e-300  # guards log10 of a zero magnitude (degenerate / collapsed weights)
 
 # Pattern combo entries -> (mode, preset). "Cardioid order (slider)" enables the order slider.
 # The last two are Auto-Design *objectives* (not first-order shapes): with the Auto-Design engine
@@ -181,19 +199,38 @@ class FilterDesignerTab(QWidget):
         return box
 
     def _build_plots(self) -> QWidget:
+        """Right-hand plot panel: a sub-tab per Chunk-3e view, all read-only over DesignResult.
+
+        Five views answer the proposal's 3e deliverables (``docs/Bug_Fix_Proposal.md``):
+        achieved-vs-target *Polar*, *Directivity* (DI / -6 dB beamwidth / WNG vs f), *Filters*
+        (per-driver weight magnitude/phase), *Per-driver* responses (the filtered on-axis
+        contributions + the combined beam), and *CEA2034 / in-room* (the steered spinorama).
+        Each reuses the Chunk-2 ``_MplCanvas`` pattern; none recompute or re-tune the design.
+        """
         w = QWidget()
         lay = QVBoxLayout(w)
         topbar = QHBoxLayout()
         topbar.addWidget(QLabel("Polar frequency:"))
         self._freq_combo = QComboBox()
-        self._freq_combo.currentIndexChanged.connect(self._replot)
+        # Only the polar view depends on the selected frequency; changing it re-draws that view
+        # alone (the vs-frequency / spinorama views span the whole band and are unaffected).
+        self._freq_combo.currentIndexChanged.connect(self._replot_polar)
         topbar.addWidget(self._freq_combo)
         topbar.addStretch(1)
         lay.addLayout(topbar)
-        self._polar = _MplCanvas(projection="polar")
-        self._di = _MplCanvas()
-        lay.addWidget(self._polar, 1)
-        lay.addWidget(self._di, 1)
+
+        self._plot_tabs = QTabWidget()
+        self._polar = _MplCanvas(projection="polar")  # achieved vs target, one frequency
+        self._metrics_canvas = _MplCanvas()  # DI / beamwidth / WNG vs frequency (+ target error)
+        self._filter_canvas = _MplCanvas()  # per-driver filter weight magnitude + phase
+        self._driver_canvas = _MplCanvas()  # filtered per-driver on-axis responses + combined
+        self._cea_canvas = _MplCanvas()  # CEA-2034-A spinorama of the steered field (in-room)
+        self._plot_tabs.addTab(self._polar, "Polar")
+        self._plot_tabs.addTab(self._metrics_canvas, "Directivity")
+        self._plot_tabs.addTab(self._filter_canvas, "Filters")
+        self._plot_tabs.addTab(self._driver_canvas, "Per-driver")
+        self._plot_tabs.addTab(self._cea_canvas, "CEA2034 / in-room")
+        lay.addWidget(self._plot_tabs, 1)
         return w
 
     @staticmethod
@@ -392,16 +429,37 @@ class FilterDesignerTab(QWidget):
         QMessageBox.critical(self, "Design failed", err)
 
     # ----------------------------------------------------------------- plots
+    def _steer_unit(self) -> np.ndarray:
+        """Normalized steering/look direction from the design's spec (the beam's on-axis)."""
+        s = np.asarray(self._result.spec.steer_dir, dtype=np.float64).reshape(3)
+        n = float(np.linalg.norm(s))
+        return s / n if n > 0 else np.array([0.0, 0.0, 1.0])
+
+    def _resample_order(self) -> int:
+        """Capped SH order for grid→arc / grid→axis resampling (matches the polar/export caps)."""
+        return min(20, safe_order_for_grid(self._ds.directions.unit_vectors.shape[0]))
+
     def _replot(self) -> None:
+        """Refresh every plot view from the current ``DesignResult`` (after a finished design)."""
+        if self._result is None or self._ds is None:
+            return
+        self._replot_polar()
+        self._replot_metrics()
+        self._replot_filters()
+        self._replot_drivers()
+        self._replot_cea()
+
+    def _replot_polar(self) -> None:
+        """Achieved vs target H-plane polar at the selected frequency (normalized dB)."""
         if self._result is None or self._ds is None:
             return
         fi = max(self._freq_combo.currentIndex(), 0)
         spec = self._result.spec
         obs = self._ds.directions
-        order = min(20, safe_order_for_grid(obs.unit_vectors.shape[0]))
+        order = self._resample_order()
 
         # Achieved + target on the horizontal great-circle through the steer axis.
-        angle, arc_uv = great_circle_arc(np.asarray(spec.steer_dir, float), 361)
+        angle, arc_uv = great_circle_arc(self._steer_unit(), 361)
         achieved = resample(self._result.steered_field[fi], obs, arc_uv, order)
         # Pass the dataset's speed of sound so the (now c-dependent) target phase matches design().
         c_sound = float(self._ds.attrs.get("speed_of_sound", 343.2))
@@ -422,14 +480,184 @@ class FilterDesignerTab(QWidget):
         ax.legend(loc="lower left", fontsize=8)
         self._polar.redraw()
 
-        ax2 = self._di.ax
-        ax2.clear()
-        ax2.semilogx(self._ds.frequencies, self._result.metrics["di_db"], "-o", ms=3)
-        ax2.set_xlabel("Frequency (Hz)")
-        ax2.set_ylabel("Directivity index (dB)")
-        ax2.set_title("Achieved directivity vs frequency")
-        ax2.grid(True, which="both", alpha=0.3)
-        self._di.redraw()
+    def _replot_metrics(self) -> None:
+        """Directivity dashboard: DI, -6 dB beamwidth, and WNG vs frequency (read from metrics).
+
+        Three stacked panels share the log-frequency axis. The DI panel carries the band's
+        magnitude target-error on a twin axis (the most direct achieved-vs-target number, since
+        the polar only shows one frequency); multi-target DI / beamwidth targets are dashed
+        reference lines. The WNG panel draws the requested floor and flags infeasible bins (where
+        the solver could not meet that floor) in red — the honest "where physics won" markers.
+        """
+        if self._result is None or self._ds is None:
+            return
+        freqs = np.asarray(self._ds.frequencies, dtype=np.float64)  # [F]
+        m = self._result.metrics
+        spec = self._result.spec
+        di = np.asarray(m["di_db"], dtype=np.float64)  # [F]
+        bw = np.asarray(m["beamwidth_deg"], dtype=np.float64)  # [F] (nan where lobe not closed)
+        wng = np.asarray(m["wng_db"], dtype=np.float64)  # [F]
+        wng_plot = np.where(np.isfinite(wng), wng, np.nan)  # -inf (collapsed bins) -> gap
+        feas = np.asarray(m["feasible_mask"], dtype=bool)  # [F]
+        te = m.get("target_error_db")  # [F] | None
+
+        fig = self._metrics_canvas.fig
+        with _quiet_redraw_warnings():
+            fig.clear()
+            ax_di = fig.add_subplot(3, 1, 1)
+            ax_bw = fig.add_subplot(3, 1, 2, sharex=ax_di)
+            ax_wng = fig.add_subplot(3, 1, 3, sharex=ax_di)
+
+        ax_di.semilogx(freqs, di, "-o", ms=3, color="tab:blue", label="achieved DI")
+        if spec.target_di_db is not None:  # multi-target DI objective
+            ax_di.axhline(spec.target_di_db, ls="--", color="tab:blue", lw=1, label="target DI")
+        if te is not None:  # achieved-vs-target magnitude error on a twin axis
+            ax_te = ax_di.twinx()
+            ax_te.semilogx(
+                freqs, np.asarray(te, float), ":", color="0.5", lw=1.2, label="target err"
+            )
+            ax_te.set_ylabel("target err (dB)", color="0.4", fontsize=8)
+            ax_te.tick_params(axis="y", labelsize=7, colors="0.4")
+        ax_di.set_ylabel("DI (dB)")
+        ax_di.set_title("Achieved directivity / beamwidth / robustness vs frequency", fontsize=9)
+        ax_di.legend(fontsize=7, loc="best")
+
+        ax_bw.semilogx(freqs, bw, "-o", ms=3, color="tab:green", label="-6 dB beamwidth")
+        if spec.target_beamwidth_deg is not None:  # multi-target beamwidth objective
+            ax_bw.axhline(
+                spec.target_beamwidth_deg, ls="--", color="tab:green", lw=1, label="target BW"
+            )
+            ax_bw.legend(fontsize=7, loc="best")
+        ax_bw.set_ylabel("beamwidth (°)")
+
+        ax_wng.semilogx(freqs, wng_plot, "-o", ms=3, color="tab:purple", label="achieved WNG")
+        ax_wng.axhline(spec.wng_floor_db, ls="--", color="tab:red", lw=1, label="WNG floor")
+        if np.any(~feas):  # honest: bins where the WNG floor could not be met
+            ax_wng.plot(
+                freqs[~feas], wng_plot[~feas], "x", color="red", ms=7, label="infeasible bin"
+            )
+        ax_wng.set_ylabel("WNG (dB)")
+        ax_wng.set_xlabel("Frequency (Hz)")
+        ax_wng.legend(fontsize=7, loc="best")
+
+        for ax in (ax_di, ax_bw, ax_wng):
+            ax.grid(True, which="both", alpha=0.3)
+        self._metrics_canvas.redraw()
+
+    def _replot_filters(self) -> None:
+        """Per-driver filter weights ``w_m(f)``: magnitude (dB, re the loudest weight) + phase.
+
+        This is the *filter* itself — the complex multiplier the beamformer applies to each
+        driver — read straight from ``result.weights`` (never recomputed). Magnitude is shown
+        relative to the largest weight in the design (weights are dimensionless gains); the phase
+        is unwrapped per driver for legibility. Phase is the filter's own phase and is plotted
+        as-is — the steering lives in H's inter-driver phase, not re-zeroed here (cardinal rule).
+        """
+        if self._result is None or self._ds is None:
+            return
+        freqs = np.asarray(self._ds.frequencies, dtype=np.float64)  # [F]
+        weights = self._result.weights  # [M, F] complex128
+        ids = [d.driver_id for d in self._ds.drivers]
+        ref = float(np.max(np.abs(weights))) + _MAG_FLOOR  # 0 dB at the loudest driver/bin
+
+        fig = self._filter_canvas.fig
+        with _quiet_redraw_warnings():
+            fig.clear()
+            ax_mag = fig.add_subplot(2, 1, 1)
+            ax_ph = fig.add_subplot(2, 1, 2, sharex=ax_mag)
+        for mi, did in enumerate(ids):
+            w = weights[mi]  # [F]
+            mag_db = 20.0 * np.log10(np.abs(w) / ref + _MAG_FLOOR)
+            ax_mag.semilogx(freqs, mag_db, "-o", ms=3, label=did)
+            ax_ph.semilogx(freqs, np.degrees(np.unwrap(np.angle(w))), "-o", ms=3, label=did)
+        ax_mag.set_ylabel("|w| (dB re max)")
+        ax_mag.set_title("Per-driver filter weights (magnitude + phase)", fontsize=9)
+        ax_mag.legend(fontsize=7, ncol=2, loc="best")
+        ax_ph.set_ylabel("phase (°, unwrapped)")
+        ax_ph.set_xlabel("Frequency (Hz)")
+        for ax in (ax_mag, ax_ph):
+            ax.grid(True, which="both", alpha=0.3)
+        self._filter_canvas.redraw()
+
+    def _replot_drivers(self) -> None:
+        """Filtered per-driver on-axis responses ``w_m(f)·H_full[m]`` + the combined steered beam.
+
+        Each driver's *radiated* on-axis contribution (its filter baked into its measured H_full),
+        SH-resampled to the steer direction, plus the achieved combined response — so the user sees
+        how the units sum to the beam. Phase is referenced to the global origin exactly as stored
+        (cardinal rule): ``stacked_h_full`` is read-only and nothing is re-zeroed per driver.
+        """
+        if self._result is None or self._ds is None:
+            return
+        obs = self._ds.directions
+        freqs = np.asarray(self._ds.frequencies, dtype=np.float64)  # [F]
+        order = self._resample_order()
+        steer_uv = self._steer_unit()[None, :]  # [1, 3]
+        h = stacked_h_full(self._ds)  # [M, F, N] complex128 (fresh stack; stored H untouched)
+        weights = self._result.weights  # [M, F]
+        ids = [d.driver_id for d in self._ds.drivers]
+
+        fig = self._driver_canvas.fig
+        with _quiet_redraw_warnings():
+            fig.clear()
+            ax_mag = fig.add_subplot(2, 1, 1)
+            ax_ph = fig.add_subplot(2, 1, 2, sharex=ax_mag)
+        for mi, did in enumerate(ids):
+            filtered = weights[mi, :, None] * h[mi]  # [F, N] = w_m(f) * H_full[m]
+            on_axis = resample(filtered, obs, steer_uv, order)[:, 0]  # [F] on the steer axis
+            ax_mag.semilogx(freqs, _db(on_axis), "-", lw=1, label=did)
+            ax_ph.semilogx(freqs, np.degrees(np.angle(on_axis)), "-", lw=1, label=did)
+        combined = resample(self._result.steered_field, obs, steer_uv, order)[:, 0]  # [F]
+        ax_mag.semilogx(freqs, _db(combined), "k-", lw=2.2, label="combined")
+        ax_ph.semilogx(freqs, np.degrees(np.angle(combined)), "k-", lw=2.2, label="combined")
+        ax_mag.set_ylabel("on-axis (dB SPL)")
+        ax_mag.set_title("Filtered per-driver responses + combined (on the steer axis)", fontsize=9)
+        ax_mag.legend(fontsize=7, ncol=2, loc="best")
+        ax_ph.set_ylabel("phase (°)")
+        ax_ph.set_xlabel("Frequency (Hz)")
+        for ax in (ax_mag, ax_ph):
+            ax.grid(True, which="both", alpha=0.3)
+        self._driver_canvas.redraw()
+
+    def _replot_cea(self) -> None:
+        """CEA-2034-A spinorama of the steered field — the in-room deliverable.
+
+        Computed from the *frozen* ``steered_field`` (a display derivation, not a re-solve), with
+        the spinorama referenced to the BEAM axis (``steer_dir``) — on-axis for the listener and
+        consistent with the in-room slope the multi-target report already shows. SPL curves on the
+        left axis, the two directivity indices on the right; the Estimated In-Room curve is bold.
+        """
+        if self._result is None or self._ds is None:
+            return
+        curves = compute_cea2034(
+            self._result.steered_field,
+            self._ds.frequencies,
+            self._ds.directions,
+            self._steer_unit(),  # reference the spinorama to the BEAM axis, not the dataset front
+        )
+        freqs = curves["frequencies"]
+
+        fig = self._cea_canvas.fig
+        with _quiet_redraw_warnings():
+            fig.clear()
+            ax = fig.add_subplot(1, 1, 1)
+            ax2 = ax.twinx()
+        for key in SPL_CURVES:
+            lw = 2.4 if key == "estimated_in_room" else 1.3
+            ax.semilogx(freqs, curves[key], color=_CEA_COLORS[key], lw=lw, label=_CEA_LABELS[key])
+        for key in DI_CURVES:
+            ax2.semilogx(
+                freqs, curves[key], color=_CEA_COLORS[key], lw=1.1, ls="--", label=_CEA_LABELS[key]
+            )
+        ax.set_xlabel("Frequency (Hz)")
+        ax.set_ylabel("dB SPL (re 20 µPa)")
+        ax2.set_ylabel("Directivity Index (dB)")
+        ax.grid(True, which="both", alpha=0.3)
+        ax.set_title("CEA-2034-A spinorama — steered beam (in-room on beam axis)", fontsize=9)
+        lines, labels = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines + lines2, labels + labels2, fontsize=6, loc="lower center", ncol=4)
+        self._cea_canvas.redraw()
 
     # ---------------------------------------------------------------- export
     def _on_export(self) -> None:
