@@ -322,9 +322,20 @@ def test_filter_designer_3e_views_render_correct_series(qapp):
     n_drivers = len(ds.drivers)  # 2
     tab.load(ds)
 
-    # Five plot sub-tabs: Polar, Directivity, Filters, Per-driver, CEA2034 / in-room.
+    # Nine plot sub-tabs: the beam-axis Polar, the full-system pattern views (H/V Polar, Balloon,
+    # Sonograms), and the realization views (Directivity, Filters, Per-driver, CEA2034 / in-room).
     titles = [tab._plot_tabs.tabText(i) for i in range(tab._plot_tabs.count())]
-    assert titles == ["Polar", "Directivity", "Filters", "Per-driver", "CEA2034 / in-room"]
+    assert titles == [
+        "Polar",
+        "H Polar",
+        "V Polar",
+        "Balloon",
+        "Sonograms",
+        "Directivity",
+        "Filters",
+        "Per-driver",
+        "CEA2034 / in-room",
+    ]
 
     # Cardinal rule: snapshot the stored tensors; plotting must leave them byte-for-byte equal.
     snaps = [(d.H_bem.copy(), d.H_full.copy()) for d in ds.drivers]
@@ -411,8 +422,8 @@ def test_filter_designer_3e_cea_references_steer_axis(qapp):
     ds = _synthetic_dataset()  # reference_axis defaults to +z (front = +z)
     tab.load(ds)
     spec = replace(tab._build_spec(), steer_dir=np.array([1.0, 0.0, 0.0]))  # beam +x != front +z
-    tab._result = design(ds, spec)
-    tab._replot_cea()
+    # Drive the real finished-design path (sets the design current, refreshes every view incl. CEA).
+    tab._on_design_done(design(ds, spec))
 
     onaxis = [
         ln
@@ -468,7 +479,7 @@ def test_filter_designer_3e_metrics_handles_inf_wng_and_infeasible(qapp):
 
 
 def test_filter_designer_3e_freq_combo_redraws_polar(qapp):
-    """3e: the 'Polar frequency' combo redraws the polar view alone (other views span the band)."""
+    """The 'Frequency' combo redraws the per-frequency views (the cuts + balloon span one bin)."""
     from beamsim2.beamform.design import design
     from beamsim2.gui.app import AppState
     from beamsim2.gui.filter_designer_view import FilterDesignerTab
@@ -479,8 +490,151 @@ def test_filter_designer_3e_freq_combo_redraws_polar(qapp):
     tab.load(ds)
     result = design(ds, tab._build_spec())
     tab._on_design_done(result)
-    tab._freq_combo.setCurrentIndex(0)  # fires _replot_polar only
+    tab._freq_combo.setCurrentIndex(0)  # fires _replot_freq_views (beam-axis + H/V Polar + Balloon)
     assert f"{ds.frequencies[0]:.0f} Hz" in tab._polar.ax.get_title()
+    assert f"{ds.frequencies[0]:.0f} Hz" in tab._hpolar.ax.get_title()
+    tab.close()
+
+
+# ---------------------------------------------------------------------------
+# Full-system pattern views + live target preview (this chunk)
+# ---------------------------------------------------------------------------
+
+
+def _labels_of(ax):
+    """Set of line labels on one matplotlib axis."""
+    return {ln.get_label() for ln in ax.lines}
+
+
+def test_filter_designer_target_preview_before_design(qapp):
+    """The target response is shown live BEFORE any design, on every target-aware view.
+
+    Guards Task 2 (target visible pre-design) and the cardinal rule (the preview build/draw reads
+    but never mutates the stored H-tensor).
+    """
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import FilterDesignerTab
+    from beamsim2.metrics.cea2034 import SPL_CURVES
+
+    tab = FilterDesignerTab(AppState())
+    ds = _synthetic_dataset()
+    snaps = [(d.H_bem.copy(), d.H_full.copy()) for d in ds.drivers]
+
+    tab.load(ds)  # builds + draws the preview — no design() called
+
+    assert tab._result is None  # nothing solved yet
+    assert tab._target is not None  # but the target field is cached + drawn
+    assert not tab._export_btn.isEnabled()
+    for d, (bem0, full0) in zip(ds.drivers, snaps):  # cardinal rule
+        assert np.array_equal(d.H_bem, bem0) and np.array_equal(d.H_full, full0)
+
+    # Beam-axis Polar + the full-system H/V cuts show the target, with no achieved overlay yet.
+    assert "target" in _labels_of(tab._polar.ax) and "achieved" not in _labels_of(tab._polar.ax)
+    for canvas in (tab._hpolar, tab._vpolar):
+        labels = _labels_of(canvas.ax)
+        assert "target" in labels and "achieved (system)" not in labels
+
+    # Balloon (3-D scatter) + Sonograms (pcolormesh) + CEA (target spinorama) all render — and the
+    # balloon/sonogram titles must say "target preview" (pins the achieved-vs-target source, since
+    # those two views swap the whole field rather than overlaying a labelled curve).
+    assert len(tab._balloon.ax.collections) >= 1
+    assert "target preview" in tab._balloon.ax.get_title()
+    sono_titles = " ".join(ax.get_title() for ax in tab._sonogram_canvas.fig.axes)
+    assert len(tab._sonogram_canvas.fig.axes) >= 2 and "target preview" in sono_titles
+    assert len(tab._cea_canvas.fig.axes[0].lines) == len(SPL_CURVES)
+    # Directivity preview: the WNG-floor reference line is drawn; achieved curves await a design.
+    metric_labels = {lbl for ax in tab._metrics_canvas.fig.axes for lbl in _labels_of(ax)}
+    assert "WNG floor" in metric_labels and "achieved DI" not in metric_labels
+    tab.close()
+
+
+def test_filter_designer_target_preview_updates_on_param_change(qapp):
+    """Changing a target parameter redraws the live target (different shape) without designing."""
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import _PATTERNS, FilterDesignerTab
+
+    tab = FilterDesignerTab(AppState())
+    tab.load(_synthetic_dataset())
+    labels = [lbl for lbl, _, _ in _PATTERNS]
+
+    def _polar_target():
+        line = [ln for ln in tab._polar.ax.lines if ln.get_label() == "target"][0]
+        return np.asarray(line.get_ydata()).copy()
+
+    tab._pattern.setCurrentIndex(labels.index("Omni"))
+    omni = _polar_target()  # omni: a flat (normalized) target lobe
+    tab._pattern.setCurrentIndex(labels.index("Figure-8"))
+    fig8 = _polar_target()  # figure-8: a deep null off-axis
+    assert tab._result is None  # still no design — this is the live preview
+    assert not np.allclose(omni, fig8)  # the target followed the pattern change
+    tab.close()
+
+
+def test_filter_designer_full_system_views_after_design(qapp):
+    """After a design the full-system cuts overlay achieved+target; balloon/sonograms render."""
+    from beamsim2.beamform.design import design
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import FilterDesignerTab
+
+    tab = FilterDesignerTab(AppState())
+    ds = _synthetic_dataset()
+    tab.load(ds)
+    snaps = [(d.H_bem.copy(), d.H_full.copy()) for d in ds.drivers]
+
+    tab._on_design_done(design(ds, tab._build_spec()))
+
+    for d, (bem0, full0) in zip(ds.drivers, snaps):  # cardinal rule on the full-system paths too
+        assert np.array_equal(d.H_bem, bem0) and np.array_equal(d.H_full, full0)
+    for canvas in (tab._hpolar, tab._vpolar):
+        labels = _labels_of(canvas.ax)
+        assert "achieved (system)" in labels and "target" in labels
+    # Balloon + Sonograms now draw the achieved system field — their titles must say so (the
+    # discriminating check that the field source flipped from the preview, not just "rendered").
+    assert len(tab._balloon.ax.collections) >= 1
+    assert "achieved (system)" in tab._balloon.ax.get_title()
+    sono_titles = " ".join(ax.get_title() for ax in tab._sonogram_canvas.fig.axes)
+    assert len(tab._sonogram_canvas.fig.axes) >= 2 and "achieved (system)" in sono_titles
+    tab.close()
+
+
+def test_filter_designer_multi_target_preview_reference_lines(qapp):
+    """The multi-target DI/beamwidth target lines show in the PRE-design preview, not just achieved.
+
+    Pins both conditional branches of ``_replot_metrics_preview`` (target DI + target beamwidth)
+    in the no-design state — the achieved metrics path is covered separately.
+    """
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import _MULTI_LABEL, _PATTERNS, FilterDesignerTab
+
+    tab = FilterDesignerTab(AppState())
+    tab.load(_synthetic_dataset())
+    tab._pattern.setCurrentIndex([lbl for lbl, _, _ in _PATTERNS].index(_MULTI_LABEL))
+    assert tab._result is None  # no design — this is the live preview
+    metric_labels = {lbl for ax in tab._metrics_canvas.fig.axes for lbl in _labels_of(ax)}
+    assert {"target DI", "target BW", "WNG floor"} <= metric_labels
+    assert "achieved DI" not in metric_labels  # achieved curves await a design
+    tab.close()
+
+
+def test_filter_designer_param_change_after_design_is_non_destructive(qapp):
+    """A param change after a design goes stale (reverts to preview, disables export), keeps it."""
+    from beamsim2.beamform.design import design
+    from beamsim2.gui.app import AppState
+    from beamsim2.gui.filter_designer_view import FilterDesignerTab
+
+    tab = FilterDesignerTab(AppState())
+    ds = _synthetic_dataset()
+    tab.load(ds)
+    tab._on_design_done(design(ds, tab._build_spec()))
+    assert tab._show_achieved() and tab._export_btn.isEnabled()
+    assert "achieved (system)" in _labels_of(tab._hpolar.ax)
+
+    tab._steer_theta.setValue(tab._steer_theta.value() + 10.0)  # nudge a target parameter
+
+    assert tab._stale and not tab._show_achieved()  # views revert to the live target preview
+    assert not tab._export_btn.isEnabled()  # exporting a stale design would be wrong
+    assert "achieved (system)" not in _labels_of(tab._hpolar.ax)
+    assert tab._result is not None  # the design itself is retained (non-destructive)
     tab.close()
 
 

@@ -4,6 +4,45 @@ All notable changes to BeamSimII are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Filter-Designer full-system pattern views + live target preview
+
+Brings the Filter Designer's plot panel to parity with the Simulation Results tab and makes the
+*requested* beam visible before any solve. **GUI-only, read-only over the existing core** — no solver,
+schema, or data-contract change; the cardinal rule (never mutate / re-zero the stored H-tensor) is
+preserved and guarded by tests.
+
+### Added
+- **Full-system pattern views in the Filter Designer (`src/beamsim2/gui/filter_designer_view.py`)**:
+  four new sub-tabs — **H Polar**, **V Polar**, **Balloon**, **Sonograms** — mirroring the Simulation
+  Results tab but plotting the **combined system response** (all drivers with their filters applied,
+  i.e. `DesignResult.steered_field`). Like the Results tab, these are referenced to the loudspeaker
+  **front axis** (`reference_axis`), so the horizontal/vertical cuts and the 3-D balloon read as the
+  speaker physically radiates; the existing **Polar** tab remains the beam-axis (steer-referenced)
+  achieved-vs-target view. Reuses the Results-tab helpers (`_plane_arc`, `_arc_order`, `_reference_axis`,
+  `_db`) — no duplicated plotting code.
+- **Live target preview before designing (Task 2)**: the target response is now drawn from the current
+  controls **before** any filter is designed, and **updates on every target-parameter change** (pattern,
+  cardioid order, steer θ/φ, accept half-angle, WNG floor, engine, multi-target objectives). The
+  beam-axis Polar and the new H/V cuts show the target (overlaying the achieved beam once designed);
+  Balloon / Sonograms / CEA-2034 preview the target field directly; the Directivity panel previews the
+  target reference lines (WNG floor, multi-target DI / beamwidth). The target is built once per change
+  (`build_target`) and cached for all views.
+
+### Changed
+- **The plot panel's frequency selector** now drives every per-frequency view (beam-axis Polar + H/V
+  Polar + Balloon), relabeled "Frequency:" (was "Polar frequency:").
+- **A design goes *stale* when a target parameter changes after a solve** (non-destructive): the views
+  revert to the live target preview and export is disabled until the next **Design**, but the completed
+  `DesignResult` is retained (no forced re-solve on a slider nudge). The Filters / Per-driver views show
+  a "press Design" placeholder until a current design exists.
+
+### Tests
+- `tests/test_gui_smoke.py`: four new tests — target preview renders pre-design on every target-aware
+  view (with a cardinal-rule snapshot guard), the preview follows a pattern change without designing,
+  the full-system cuts overlay achieved+target after a design, and a post-design param change is stale +
+  non-destructive (export off, achieved hidden, result retained). Updated the 3e tab-title and frequency
+  -combo tests for the nine-tab layout.
+
 ## [Unreleased] — App-Shell Chunk (project system + menu bar + undo/redo + view manager + GUI logging)
 
 Introduces the full application shell for BeamSimII. **This is the "App-Shell Chunk" from
